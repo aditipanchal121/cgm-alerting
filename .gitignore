@@ -1,0 +1,32 @@
+# Node / Firebase Functions
+backend/functions/node_modules/
+backend/functions/lib/
+backend/*.log
+backend/.firebase/
+backend/firebase-debug.log
+backend/firestore-debug.log
+backend/ui-debug.log
+
+# Secrets - never commit
+**/google-services.json
+**/GoogleService-Info.plist
+**/*.env
+**/serviceAccountKey.json
+
+# Android / Gradle
+android-app/local.properties
+android-app/.gradle/
+android-app/**/build/
+android-app/.idea/
+android-app/*.iml
+android-app/.cxx/
+android-app/captures/
+android-app/app/release/
+
+# PlatformIO
+firmware/.pio/
+firmware/.vscode/
+
+# OS
+.DS_Store
+Thumbs.db

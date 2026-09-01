@@ -1,0 +1,13 @@
+{
+  "rules": {
+    "devices": {
+      "$deviceId": {
+        "alert": {
+          ".read": "auth != null",
+          ".write": "auth != null",
+          ".validate": "newData.hasChildren(['severity', 'alertId', 'timestamp'])"
+        }
+      }
+    }
+  }
+}
