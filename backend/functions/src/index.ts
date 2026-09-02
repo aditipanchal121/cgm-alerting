@@ -4,15 +4,25 @@ import { setGlobalOptions } from 'firebase-functions/v2';
 import * as admin from 'firebase-admin';
 import { fetchRecentReadings, verifyConnection } from './nightscout';
 import { evaluateAlerts } from './alertEngine';
-import { sendAlertPush } from './fcm';
+import { sendAlertPush, sendReadingStatusPush } from './fcm';
 import { getPatientSecret, storePatientSecret } from './secretManager';
 import { AlertEvent, Thresholds } from './types';
 
 admin.initializeApp();
 setGlobalOptions({ region: 'us-central1', maxInstances: 10 });
 
-const db = admin.firestore();
-const rtdb = admin.database();
+let _db: admin.firestore.Firestore | undefined;
+function db(): admin.firestore.Firestore {
+  if (!_db) _db = admin.firestore();
+  return _db;
+}
+
+let _rtdb: admin.database.Database | undefined;
+function rtdb(): admin.database.Database {
+  if (!_rtdb) _rtdb = admin.database();
+  return _rtdb;
+}
+
 const projectId = process.env.GCLOUD_PROJECT!;
 
 const DEFAULT_THRESHOLDS: Thresholds = {
@@ -32,7 +42,7 @@ const DEFAULT_THRESHOLDS: Thresholds = {
  * fixed schedule regardless of whether any phone is on, evaluates alerts,
  * and fans out to Firestore history, FCM push, and any paired ESP32. */
 export const pollGlucose = onSchedule('every 5 minutes', async () => {
-  const patientsSnap = await db.collection('patients').get();
+  const patientsSnap = await db().collection('patients').get();
   await Promise.all(patientsSnap.docs.map((doc) => pollOnePatient(doc.id, doc.data())));
 });
 
@@ -45,13 +55,38 @@ async function pollOnePatient(patientId: string, patient: FirebaseFirestore.Docu
     const nowMs = Date.now();
     const latest = readings[readings.length - 1];
 
-    await db
+    // Gluroo's devicestatus feed has occasionally reset IOB to exactly 0 from
+    // a much higher value within a single 5-minute poll, which isn't
+    // physiologically plausible - insulin doesn't disappear that fast. Flag
+    // (never hide) that specific case so the dashboard can tell family/owner
+    // the zero might be a Gluroo-side glitch, while still showing genuine
+    // zeros (small or no prior IOB) as normal.
+    //
+    // The baseline is the last known *non-zero* IOB, persisted on the patient
+    // doc rather than read from the previous reading - a glitch can produce
+    // several consecutive zero polls in a row, and comparing each one only to
+    // the poll before it would clear the flag after the first zero (0 vs 0
+    // looks like "no drop"). The flag needs to stay up across all of them
+    // until a real non-zero reading confirms Gluroo has recovered.
+    if (latest.iob === 0) {
+      const lastNonZeroIob = typeof patient.lastNonZeroIob === 'number' ? patient.lastNonZeroIob : null;
+      latest.iobUnreliable = lastNonZeroIob !== null && lastNonZeroIob > 0.5;
+    } else if (latest.iob !== null) {
+      await db().collection('patients').doc(patientId).update({ lastNonZeroIob: latest.iob });
+    }
+
+    await db()
       .collection('patients')
       .doc(patientId)
       .collection('readings')
       .add({ ...latest, fetchedAt: nowMs });
 
-    const thresholdsDoc = await db
+    // Always driven by the actual reading, independent of whether it crossed
+    // any alert threshold - this keeps a persistent status notification
+    // current, separate from the low/high/predictive alert notifications.
+    await sendReadingStatusPush(patientId, patient.displayName ?? 'NightWatch', latest);
+
+    const thresholdsDoc = await db()
       .collection('patients')
       .doc(patientId)
       .collection('thresholds')
@@ -62,7 +97,7 @@ async function pollOnePatient(patientId: string, patient: FirebaseFirestore.Docu
     const events = evaluateAlerts(readings, thresholds, nowMs);
 
     for (const event of events) {
-      await db.collection('patients').doc(patientId).collection('alerts').add(event);
+      await db().collection('patients').doc(patientId).collection('alerts').add(event);
       if (event.severity !== 'INFO') {
         await sendAlertPush(patientId, patient.displayName ?? 'NightWatch', event);
       }
@@ -79,7 +114,7 @@ async function updatePairedDevices(
   events: AlertEvent[],
   nowMs: number
 ): Promise<void> {
-  const devicesSnap = await db.collection('devices').where('patientId', '==', patientId).get();
+  const devicesSnap = await db().collection('devices').where('patientId', '==', patientId).get();
   if (devicesSnap.empty) return;
 
   const worst = [...events].sort((a, b) => severityRank(b.severity) - severityRank(a.severity))[0];
@@ -90,7 +125,7 @@ async function updatePairedDevices(
     ? { severity: worst.severity, alertId: `${worst.type}-${bucket}`, message: worst.message, timestamp: nowMs }
     : { severity: 'NONE', alertId: `clear-${bucket}`, message: '', timestamp: nowMs };
 
-  await Promise.all(devicesSnap.docs.map((d) => rtdb.ref(`devices/${d.id}/alert`).set(payload)));
+  await Promise.all(devicesSnap.docs.map((d) => rtdb().ref(`devices/${d.id}/alert`).set(payload)));
 }
 
 function severityRank(s: string): number {
@@ -123,13 +158,13 @@ export const savePatientCredentials = onCall(async (request) => {
     throw new HttpsError('invalid-argument', 'patientId, nightscoutUrl and apiSecret are required.');
   }
 
-  const patientDoc = await db.collection('patients').doc(patientId).get();
+  const patientDoc = await db().collection('patients').doc(patientId).get();
   if (!patientDoc.exists || patientDoc.data()?.ownerUid !== request.auth.uid) {
     throw new HttpsError('permission-denied', 'Only the patient owner can set credentials.');
   }
 
   await storePatientSecret(projectId, patientId, apiSecret);
-  await db.collection('patients').doc(patientId).update({ nightscoutUrl });
+  await db().collection('patients').doc(patientId).update({ nightscoutUrl });
   return { ok: true };
 });
 
@@ -141,18 +176,18 @@ export const pairMcuDevice = onCall(async (request) => {
     throw new HttpsError('invalid-argument', 'patientId and deviceId are required.');
   }
 
-  const patientDoc = await db.collection('patients').doc(patientId).get();
+  const patientDoc = await db().collection('patients').doc(patientId).get();
   if (!patientDoc.exists || patientDoc.data()?.ownerUid !== request.auth.uid) {
     throw new HttpsError('permission-denied', 'Only the patient owner can pair a device.');
   }
 
   const nowMs = Date.now();
-  await db.collection('devices').doc(deviceId).set({
+  await db().collection('devices').doc(deviceId).set({
     patientId,
     pairedAt: nowMs,
     pairedBy: request.auth.uid,
   });
-  await rtdb.ref(`devices/${deviceId}/alert`).set({
+  await rtdb().ref(`devices/${deviceId}/alert`).set({
     severity: 'NONE',
     alertId: `paired-${nowMs}`,
     message: '',

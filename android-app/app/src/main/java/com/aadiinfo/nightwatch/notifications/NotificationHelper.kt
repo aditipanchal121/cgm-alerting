@@ -22,11 +22,24 @@ object NotificationHelper {
     const val CHANNEL_INFO = "info_alerts"
     const val CHANNEL_WARNING = "warning_alerts"
     const val CHANNEL_CRITICAL = "critical_alerts"
+    const val CHANNEL_STATUS = "reading_status"
+
+    /** Fixed ID so each update replaces the same ongoing notification instead
+     * of stacking a new one every poll. */
+    const val STATUS_NOTIFICATION_ID = 1001
 
     fun createChannels(context: Context) {
         val manager = context.getSystemService(NotificationManager::class.java) ?: return
 
         val info = NotificationChannel(CHANNEL_INFO, "Info", NotificationManager.IMPORTANCE_LOW)
+
+        val status = NotificationChannel(
+            CHANNEL_STATUS,
+            "Current reading",
+            NotificationManager.IMPORTANCE_LOW
+        ).apply {
+            setShowBadge(false)
+        }
 
         val warning = NotificationChannel(
             CHANNEL_WARNING,
@@ -54,7 +67,28 @@ object NotificationHelper {
             )
         }
 
-        manager.createNotificationChannels(listOf(info, warning, critical))
+        manager.createNotificationChannels(listOf(info, warning, critical, status))
+    }
+
+    /** Ongoing, silent notification showing the latest actual reading - kept
+     * separate from the alert channels above so it never buzzes, and always
+     * reflects the real reading rather than a predicted/alert value. */
+    fun updateReadingStatus(context: Context, title: String, text: String) {
+        val builder = NotificationCompat.Builder(context, CHANNEL_STATUS)
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setOngoing(true)
+            .setAutoCancel(false)
+            .setOnlyAlertOnce(true)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setCategory(NotificationCompat.CATEGORY_STATUS)
+
+        try {
+            NotificationManagerCompat.from(context).notify(STATUS_NOTIFICATION_ID, builder.build())
+        } catch (_: SecurityException) {
+            // POST_NOTIFICATIONS not granted (API 33+).
+        }
     }
 
     fun showAlert(context: Context, title: String, message: String, severity: Severity) {

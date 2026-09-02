@@ -55,7 +55,8 @@ fun DocumentSnapshot.toGlucoseReading(): GlucoseReading? {
         sgv = sgv.toInt(),
         direction = getString("direction") ?: "NOT COMPUTABLE",
         dateMs = getLong("dateMs") ?: 0L,
-        iob = getDouble("iob")
+        iob = getDouble("iob"),
+        iobUnreliable = getBoolean("iobUnreliable") ?: false
     )
 }
 

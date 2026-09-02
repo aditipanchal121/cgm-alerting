@@ -55,7 +55,6 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.6")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.6")
     implementation("androidx.core:core-ktx:1.13.1")
-
     implementation(platform("com.google.firebase:firebase-bom:33.4.0"))
     // Kotlin extensions are bundled directly into these main artifacts now -
     // the old "-ktx" suffixed artifacts are deprecated, so these are used
@@ -65,6 +64,7 @@ dependencies {
     implementation("com.google.firebase:firebase-database")
     implementation("com.google.firebase:firebase-messaging")
     implementation("com.google.firebase:firebase-functions")
+    implementation("com.google.firebase:firebase-analytics")
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.8.1")
 

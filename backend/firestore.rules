@@ -16,7 +16,13 @@ service cloud.firestore {
     }
 
     match /patients/{patientId} {
-      allow read: if isMember(patientId);
+      // Read uses resource.data directly (not isMember's exists() check) because
+      // Firestore can only authorize a *list* query (patientsForUser's
+      // array-contains query, not just single-document gets) when the rule is
+      // provable from the query's own filter + the candidate document's own
+      // fields - it won't trust a cross-document exists() lookup keyed by a
+      // wildcard that varies per result, which is what isMember() does.
+      allow read: if isSignedIn() && request.auth.uid in resource.data.memberUids;
       allow create: if isSignedIn() && request.resource.data.ownerUid == request.auth.uid;
       allow update, delete: if isOwner(patientId);
 

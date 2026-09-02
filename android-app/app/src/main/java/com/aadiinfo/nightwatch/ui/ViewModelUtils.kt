@@ -7,5 +7,5 @@ import androidx.lifecycle.viewmodel.viewModelFactory
 
 /** Small helper so each screen can build its ViewModel from AppContainer
  * without pulling in a DI framework. */
-fun <T : ViewModel> vmFactory(create: () -> T): ViewModelProvider.Factory =
+inline fun <reified T : ViewModel> vmFactory(noinline create: () -> T): ViewModelProvider.Factory =
     viewModelFactory { initializer { create() } }

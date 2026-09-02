@@ -22,7 +22,7 @@ class MainActivity : ComponentActivity() {
 
         val container = (application as NightWatchApplication).container
         setContent {
-            NightWatchApp(container.authRepository, container.patientRepository)
+            NightWatchApp(container.authRepository, container.patientRepository, container.fcmTokenRepository)
         }
     }
 }

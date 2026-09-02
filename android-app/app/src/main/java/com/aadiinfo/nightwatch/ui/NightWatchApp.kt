@@ -1,7 +1,9 @@
 package com.aadiinfo.nightwatch.ui
 
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bluetooth
@@ -15,10 +17,12 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -28,6 +32,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.aadiinfo.nightwatch.data.repository.AuthRepository
+import com.aadiinfo.nightwatch.data.repository.FcmTokenRepository
 import com.aadiinfo.nightwatch.data.repository.PatientRepository
 import com.aadiinfo.nightwatch.domain.model.Patient
 import com.aadiinfo.nightwatch.ui.alertsettings.AlertSettingsScreen
@@ -37,9 +42,16 @@ import com.aadiinfo.nightwatch.ui.history.HistoryScreen
 import com.aadiinfo.nightwatch.ui.mcupairing.McuPairingScreen
 import com.aadiinfo.nightwatch.ui.setup.SetupScreen
 import com.aadiinfo.nightwatch.ui.theme.NightWatchTheme
+import com.google.firebase.Firebase
+import com.google.firebase.messaging.messaging
+import kotlinx.coroutines.tasks.await
 
 @Composable
-fun NightWatchApp(authRepository: AuthRepository, patientRepository: PatientRepository) {
+fun NightWatchApp(
+    authRepository: AuthRepository,
+    patientRepository: PatientRepository,
+    fcmTokenRepository: FcmTokenRepository
+) {
     NightWatchTheme {
         val user by authRepository.authState.collectAsState(initial = authRepository.currentUser)
         val currentUser = user
@@ -50,6 +62,18 @@ fun NightWatchApp(authRepository: AuthRepository, patientRepository: PatientRepo
         }
 
         val uid = currentUser.uid
+
+        // onNewToken (NightWatchFcmService) only fires when FCM mints or
+        // rotates a token, which typically already happened at first app
+        // launch - before sign-in, when there's no uid to register it under.
+        // That token then sits unused for months, so nothing ever gets
+        // written to users/{uid}/fcmTokens and every push silently has zero
+        // recipients. Explicitly fetching+registering the current token here
+        // once a user is signed in covers that gap.
+        LaunchedEffect(uid) {
+            runCatching { Firebase.messaging.token.await() }
+                .onSuccess { token -> runCatching { fcmTokenRepository.registerToken(uid, token) } }
+        }
         val patients by patientRepository.patientsForUser(uid).collectAsState(initial = null)
 
         when (val list = patients) {
@@ -127,7 +151,27 @@ private fun MainScreen(
                 Tab.DASHBOARD -> DashboardScreen(patientRepository, patient.id)
                 Tab.HISTORY -> HistoryScreen(patientRepository, patient.id)
                 Tab.SETTINGS -> if (isOwner) {
-                    AlertSettingsScreen(patientRepository, patient.id)
+                    var editingConnection by remember { mutableStateOf(false) }
+                    if (editingConnection) {
+                        SetupScreen(
+                            patientRepository = patientRepository,
+                            uid = patient.ownerUid,
+                            existingPatientId = patient.id,
+                            initialNightscoutUrl = patient.nightscoutUrl
+                        ) { editingConnection = false }
+                    } else {
+                        Column(modifier = Modifier.fillMaxSize()) {
+                            OutlinedButton(
+                                onClick = { editingConnection = true },
+                                modifier = Modifier.fillMaxWidth().padding(24.dp, 24.dp, 24.dp, 0.dp)
+                            ) {
+                                Text("Edit Gluroo connection")
+                            }
+                            Box(modifier = Modifier.weight(1f)) {
+                                AlertSettingsScreen(patientRepository, patient.id)
+                            }
+                        }
+                    }
                 } else {
                     Text("Only the owner can edit thresholds", modifier = Modifier.padding(24.dp))
                 }

@@ -54,6 +54,7 @@ async function fetchIob(trimmedBase: string, apiSecret: string): Promise<number 
     if (!status) return null;
     // IOB shape depends on which loop system feeds Gluroo - check known shapes.
     const iob =
+      status?.glurooIob ??
       status?.loop?.iob?.iob ??
       status?.openaps?.iob?.iob ??
       (Array.isArray(status?.openaps?.iob) ? status.openaps.iob[0]?.iob : undefined) ??

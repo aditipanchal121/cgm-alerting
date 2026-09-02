@@ -24,12 +24,17 @@ data class SetupUiState(
 class SetupViewModel(
     private val patientRepository: PatientRepository,
     private val uid: String,
-    existingPatientId: String? = null
+    existingPatientId: String? = null,
+    initialNightscoutUrl: String = ""
 ) : ViewModel() {
 
     var uiState by mutableStateOf(
         if (existingPatientId != null) {
-            SetupUiState(patientId = existingPatientId, step = SetupStep.ENTER_CREDENTIALS)
+            SetupUiState(
+                patientId = existingPatientId,
+                nightscoutUrl = initialNightscoutUrl,
+                step = SetupStep.ENTER_CREDENTIALS
+            )
         } else {
             SetupUiState()
         }

@@ -6,6 +6,7 @@ export type AlertType =
   | 'HIGH'
   | 'URGENT_HIGH'
   | 'IOB_HIGH'
+  | 'IOB_UNRELIABLE'
   | 'STALE_DATA'
   | 'PREDICTED_LOW';
 
@@ -31,6 +32,11 @@ export interface GlucoseReading {
   direction: string;
   dateMs: number;
   iob: number | null;
+  /** True when iob is 0 but dropped from a meaningfully higher value in a
+   * single poll cycle - insulin doesn't disappear that fast, so this is
+   * likely a Gluroo-side glitch rather than a real zero. The zero is still
+   * reported as-is; this only flags it as suspect. */
+  iobUnreliable?: boolean;
 }
 
 export interface AlertEvent {

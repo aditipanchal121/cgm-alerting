@@ -88,6 +88,13 @@ private fun ReadingCard(reading: GlucoseReading, thresholds: Thresholds) {
             color = if (iob >= thresholds.iobThreshold) MaterialTheme.colorScheme.error
             else MaterialTheme.colorScheme.onSurfaceVariant
         )
+        if (reading.iobUnreliable) {
+            Text(
+                "This dropped abruptly from a much higher value - may be unreliable data from Gluroo rather than a true zero.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error
+            )
+        }
     }
 
     Spacer(Modifier.height(24.dp))

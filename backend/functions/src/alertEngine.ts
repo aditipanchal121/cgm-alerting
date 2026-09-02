@@ -87,6 +87,18 @@ export function evaluateAlerts(
     );
   }
 
+  if (latest.iobUnreliable) {
+    events.push(
+      makeEvent(
+        'IOB_UNRELIABLE',
+        'INFO',
+        latest.iob,
+        'IOB dropped to 0 abruptly - this may be unreliable data from Gluroo rather than a true zero.',
+        nowMs
+      )
+    );
+  }
+
   if (isWithinNightWindow(nowMs, thresholds)) {
     for (const event of events) {
       if (event.severity === 'WARNING' && NIGHT_ESCALATED_TYPES.has(event.type)) {

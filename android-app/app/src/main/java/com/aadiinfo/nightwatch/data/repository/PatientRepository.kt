@@ -58,12 +58,17 @@ class PatientRepository(
             .snapshotFlow()
             .map { snapshot -> snapshot.documents.map { it.toAlertEvent() } }
 
-    /** Creates the patient doc and bootstraps the creator as its owner. */
+    /** Creates the patient doc and bootstraps the creator as its owner.
+     *
+     * These are two sequential writes rather than one atomic batch on purpose:
+     * the members/{uid} create rule verifies ownership via get() on the parent
+     * patient doc, and Firestore evaluates get()/exists() calls in a batch's
+     * rules against the state *before* the batch - so if both writes were in
+     * the same batch, that get() would never see the patient doc being
+     * created alongside it, and the whole batch would be denied. */
     suspend fun createPatient(ownerUid: String, displayName: String): String {
         val doc = firestore.collection("patients").document()
-        val batch = firestore.batch()
-        batch.set(
-            doc,
+        doc.set(
             mapOf(
                 "ownerUid" to ownerUid,
                 "displayName" to displayName,
@@ -71,12 +76,10 @@ class PatientRepository(
                 "memberUids" to listOf(ownerUid),
                 "createdAt" to System.currentTimeMillis()
             )
-        )
-        batch.set(
-            doc.collection("members").document(ownerUid),
-            mapOf("role" to "owner", "displayName" to displayName)
-        )
-        batch.commit().await()
+        ).await()
+        doc.collection("members").document(ownerUid)
+            .set(mapOf("role" to "owner", "displayName" to displayName))
+            .await()
         return doc.id
     }
 

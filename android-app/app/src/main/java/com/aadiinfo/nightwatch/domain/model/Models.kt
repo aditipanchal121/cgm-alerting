@@ -5,7 +5,7 @@ import java.util.TimeZone
 enum class Severity { INFO, WARNING, CRITICAL }
 
 enum class AlertType {
-    LOW, URGENT_LOW, HIGH, URGENT_HIGH, IOB_HIGH, STALE_DATA, PREDICTED_LOW
+    LOW, URGENT_LOW, HIGH, URGENT_HIGH, IOB_HIGH, IOB_UNRELIABLE, STALE_DATA, PREDICTED_LOW
 }
 
 /** Mirrors Nightscout's `direction` values so the dashboard can show a trend arrow. */
@@ -30,7 +30,8 @@ data class GlucoseReading(
     val sgv: Int,
     val direction: String,
     val dateMs: Long,
-    val iob: Double?
+    val iob: Double?,
+    val iobUnreliable: Boolean = false
 )
 
 data class AlertEvent(

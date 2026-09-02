@@ -24,10 +24,13 @@ fun SetupScreen(
     patientRepository: PatientRepository,
     uid: String,
     existingPatientId: String? = null,
+    initialNightscoutUrl: String = "",
     onSetupComplete: (String) -> Unit
 ) {
     val viewModel: SetupViewModel = viewModel(
-        factory = vmFactory { SetupViewModel(patientRepository, uid, existingPatientId) }
+        factory = vmFactory {
+            SetupViewModel(patientRepository, uid, existingPatientId, initialNightscoutUrl)
+        }
     )
     val state = viewModel.uiState
 
@@ -65,8 +68,13 @@ fun SetupScreen(
                 Text("Connect Gluroo", style = MaterialTheme.typography.headlineSmall)
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "Enter the Nightscout-compatible URL and API secret from Gluroo " +
-                        "Global Connect (Data settings in the Gluroo app).",
+                    if (existingPatientId != null) {
+                        "The API secret isn't stored for display, so re-enter it here even " +
+                            "if you're only changing the URL."
+                    } else {
+                        "Enter the Nightscout-compatible URL and API secret from Gluroo " +
+                            "Global Connect (Data settings in the Gluroo app)."
+                    },
                     style = MaterialTheme.typography.bodyMedium
                 )
                 Spacer(Modifier.height(16.dp))
