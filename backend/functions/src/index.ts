@@ -1,5 +1,6 @@
 import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
+import { onDocumentWritten } from 'firebase-functions/v2/firestore';
 import { setGlobalOptions } from 'firebase-functions/v2';
 import * as admin from 'firebase-admin';
 import { fetchRecentReadings, verifyConnection } from './nightscout';
@@ -7,6 +8,7 @@ import { evaluateAlerts } from './alertEngine';
 import { sendAlertPush, sendReadingStatusPush } from './fcm';
 import { getPatientSecret, storePatientSecret } from './secretManager';
 import { deleteOldAlerts, deleteOldReadings } from './cleanup';
+import { getFreshExternalIob, pushExternalIobUpdate } from './externalIob';
 import { AlertEvent, Thresholds } from './types';
 
 admin.initializeApp();
@@ -84,7 +86,15 @@ async function pollOnePatient(patientId: string, patient: FirebaseFirestore.Docu
     // the poll before it would clear the flag after the first zero (0 vs 0
     // looks like "no drop"). The flag needs to stay up across all of them
     // until a real non-zero reading confirms Gluroo has recovered.
-    if (latest.iob === 0) {
+    const externalIob = await getFreshExternalIob(db(), patientId, nowMs);
+    if (externalIob !== null) {
+      // A directly-reported IOB (e.g. a paired phone's NotificationListenerService
+      // reading a pump app's own notification) is trusted outright - it isn't
+      // Gluroo's own devicestatus feed, so the glitch-detection heuristic below
+      // doesn't apply to it.
+      latest.iob = externalIob;
+      latest.iobUnreliable = false;
+    } else if (latest.iob === 0) {
       const lastNonZeroIob = typeof patient.lastNonZeroIob === 'number' ? patient.lastNonZeroIob : null;
       latest.iobUnreliable = lastNonZeroIob !== null && lastNonZeroIob > 0.5;
     } else if (latest.iob !== null) {
@@ -183,6 +193,42 @@ export const savePatientCredentials = onCall(async (request) => {
   await db().collection('patients').doc(patientId).update({ nightscoutUrl });
   return { ok: true };
 });
+
+/** Owner-only: designates which signed-in user's device is trusted to
+ * report IOB directly (e.g. via a NotificationListenerService reading a
+ * pump app's own notification) instead of relying solely on Gluroo's own
+ * devicestatus IOB. The actual write permission is enforced by
+ * firestore.rules checking this field, not by anything client-side -
+ * this callable is just how it gets set in the first place. */
+export const setIobSource = onCall(async (request) => {
+  if (!request.auth) throw new HttpsError('unauthenticated', 'Sign in required.');
+  const { patientId, sourceUid } = (request.data ?? {}) as { patientId?: string; sourceUid?: string };
+  if (!patientId || !sourceUid) {
+    throw new HttpsError('invalid-argument', 'patientId and sourceUid are required.');
+  }
+
+  const patientDoc = await db().collection('patients').doc(patientId).get();
+  if (!patientDoc.exists || patientDoc.data()?.ownerUid !== request.auth.uid) {
+    throw new HttpsError('permission-denied', 'Only the patient owner can set the IOB source.');
+  }
+
+  await db().collection('patients').doc(patientId).update({ iobSourceUid: sourceUid });
+  return { ok: true };
+});
+
+/** Fires within seconds of the designated IOB source device writing a fresh
+ * value - not on the 5-minute pollGlucose schedule - so the persistent
+ * notification/widget reflect it as close to immediately as possible. */
+export const onExternalIobWritten = onDocumentWritten(
+  'patients/{patientId}/externalIob/current',
+  async (event) => {
+    const afterSnap = event.data?.after;
+    if (!afterSnap || !afterSnap.exists) return;
+    const iob = afterSnap.data()?.iob;
+    if (typeof iob !== 'number') return;
+    await pushExternalIobUpdate(db(), event.params.patientId, iob);
+  }
+);
 
 /** Links an ESP32's self-reported deviceId to a patient the caller owns. */
 export const pairMcuDevice = onCall(async (request) => {

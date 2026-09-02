@@ -49,6 +49,19 @@ service cloud.firestore {
         allow create, delete: if false;
       }
 
+      // Directly-reported IOB (e.g. a paired phone's NotificationListenerService
+      // reading a pump app's own notification, bypassing Gluroo's unreliable
+      // devicestatus feed). Write access is scoped to exactly one UID - set by
+      // the owner via the setIobSource callable, never by clients directly -
+      // deliberately independent of the members/roles system above, since
+      // being trusted to report IOB isn't the same permission as being a
+      // follower or owner.
+      match /externalIob/{doc} {
+        allow read: if isMember(patientId);
+        allow write: if isSignedIn() &&
+          get(/databases/$(database)/documents/patients/$(patientId)).data.iobSourceUid == request.auth.uid;
+      }
+
       // Family membership: the patient's creator bootstraps themselves as
       // owner; only the owner can add/remove/re-role members after that.
       match /members/{uid} {

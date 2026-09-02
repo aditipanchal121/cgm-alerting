@@ -147,4 +147,13 @@ class PatientRepository(
             .call(mapOf("patientId" to patientId, "deviceId" to deviceId))
             .await()
     }
+
+    /** Owner-only: designates which signed-in user's device is trusted to
+     * report IOB directly (e.g. a paired phone's Omnipod notification
+     * listener), independent of the members/roles system. */
+    suspend fun setIobSource(patientId: String, sourceUid: String) {
+        functions.getHttpsCallable("setIobSource")
+            .call(mapOf("patientId" to patientId, "sourceUid" to sourceUid))
+            .await()
+    }
 }

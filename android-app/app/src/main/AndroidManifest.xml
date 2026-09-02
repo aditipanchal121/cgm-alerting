@@ -43,6 +43,21 @@
             </intent-filter>
         </service>
 
+        <!-- Reads IOB directly from a pump app's own notification (e.g. Omnipod 5's
+             "Automated Mode" notification) as a more reliable alternative to
+             Gluroo's IOB feed - see OmnipodIobListenerService. Inert unless the
+             user both enables it in IobSourceSetupScreen and separately grants
+             Notification access in system Settings (BIND_NOTIFICATION_LISTENER_SERVICE
+             can only be requested that way, never via a runtime permission dialog). -->
+        <service
+            android:name=".notifications.OmnipodIobListenerService"
+            android:exported="true"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+
         <!-- Home-screen widget showing the latest reading/arrow/IOB - exported
              true because the launcher/AppWidgetManager (a different app/process)
              is what delivers APPWIDGET_UPDATE broadcasts to this receiver. -->

@@ -2,8 +2,11 @@ package com.aadiinfo.nightwatch.ui
 
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bluetooth
@@ -12,15 +15,19 @@ import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Insights
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -28,9 +35,12 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.aadiinfo.nightwatch.data.repository.AuthRepository
@@ -41,12 +51,14 @@ import com.aadiinfo.nightwatch.ui.alertsettings.AlertSettingsScreen
 import com.aadiinfo.nightwatch.ui.auth.LoginScreen
 import com.aadiinfo.nightwatch.ui.dashboard.DashboardScreen
 import com.aadiinfo.nightwatch.ui.history.HistoryScreen
+import com.aadiinfo.nightwatch.ui.iobsource.IobSourceSetupScreen
 import com.aadiinfo.nightwatch.ui.mcupairing.McuPairingScreen
 import com.aadiinfo.nightwatch.ui.predictions.PredictionsScreen
 import com.aadiinfo.nightwatch.ui.setup.SetupScreen
 import com.aadiinfo.nightwatch.ui.theme.NightWatchTheme
 import com.google.firebase.Firebase
 import com.google.firebase.messaging.messaging
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 
 @Composable
@@ -82,7 +94,25 @@ fun NightWatchApp(
         when (val list = patients) {
             null -> LoadingScreen()
             else -> if (list.isEmpty()) {
-                SetupScreen(patientRepository, uid) { /* patient list flow refreshes on write */ }
+                // A device with no patients isn't necessarily starting a new
+                // one - it might be a family member's phone (e.g. one that
+                // only has a pump app installed) meant purely to report IOB,
+                // which deliberately doesn't require joining as a family
+                // member (see IobSourceSetupScreen).
+                var showIobSourceSetup by remember { mutableStateOf(false) }
+                if (showIobSourceSetup) {
+                    IobSourceSetupScreen(onBack = { showIobSourceSetup = false })
+                } else {
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        SetupScreen(patientRepository, uid) { /* patient list flow refreshes on write */ }
+                        TextButton(
+                            onClick = { showIobSourceSetup = true },
+                            modifier = Modifier.align(Alignment.BottomCenter).padding(24.dp)
+                        ) {
+                            Text("This device belongs to a family member's pump instead?")
+                        }
+                    }
+                }
             } else {
                 val patient = list.first()
                 if (patient.nightscoutUrl.isBlank() && patient.ownerUid == uid) {
@@ -177,6 +207,9 @@ private fun MainScreen(
                             ) {
                                 Text("Edit Gluroo connection")
                             }
+                            Spacer(Modifier.height(16.dp))
+                            IobSourceOwnerSection(patientRepository, patient.id)
+                            Spacer(Modifier.height(16.dp))
                             Box(modifier = Modifier.weight(1f)) {
                                 AlertSettingsScreen(patientRepository, patient.id)
                             }
@@ -191,6 +224,66 @@ private fun MainScreen(
                     Text("Only the owner can pair an alarm device", modifier = Modifier.padding(24.dp))
                 }
             }
+        }
+    }
+}
+
+/** Lets the owner authorize a family member's device to report IOB directly
+ * (see IobSourceSetupScreen and backend/firestore.rules' externalIob rule) -
+ * that device doesn't need to be a family member itself, just this UID. */
+@Composable
+private fun IobSourceOwnerSection(patientRepository: PatientRepository, patientId: String) {
+    val clipboardManager = LocalClipboardManager.current
+    val scope = rememberCoroutineScope()
+    var sourceUid by remember { mutableStateOf("") }
+    var status by remember { mutableStateOf<String?>(null) }
+
+    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp)) {
+        Text("IOB source", style = MaterialTheme.typography.titleSmall)
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "Let a family member's phone report IOB directly from their pump " +
+                "app's own notification, instead of relying on Gluroo's IOB feed. " +
+                "Share this patient ID with them, then paste their account ID below " +
+                "once they've set up their device.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(8.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "Patient ID: $patientId",
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.weight(1f)
+            )
+            TextButton(onClick = { clipboardManager.setText(AnnotatedString(patientId)) }) {
+                Text("Copy")
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        OutlinedTextField(
+            value = sourceUid,
+            onValueChange = { sourceUid = it; status = null },
+            label = { Text("Family member's account ID") },
+            modifier = Modifier.fillMaxWidth()
+        )
+        Spacer(Modifier.height(8.dp))
+        Button(
+            onClick = {
+                scope.launch {
+                    runCatching { patientRepository.setIobSource(patientId, sourceUid) }
+                        .onSuccess { status = "Saved." }
+                        .onFailure { status = it.message ?: "Failed to save." }
+                }
+            },
+            enabled = sourceUid.isNotBlank(),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("Set as IOB source")
+        }
+        status?.let {
+            Spacer(Modifier.height(4.dp))
+            Text(it, style = MaterialTheme.typography.bodySmall)
         }
     }
 }
