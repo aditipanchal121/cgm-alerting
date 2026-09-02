@@ -10,6 +10,7 @@ import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.ExitToApp
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Insights
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -30,6 +31,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.aadiinfo.nightwatch.data.repository.AuthRepository
 import com.aadiinfo.nightwatch.data.repository.FcmTokenRepository
@@ -40,6 +42,7 @@ import com.aadiinfo.nightwatch.ui.auth.LoginScreen
 import com.aadiinfo.nightwatch.ui.dashboard.DashboardScreen
 import com.aadiinfo.nightwatch.ui.history.HistoryScreen
 import com.aadiinfo.nightwatch.ui.mcupairing.McuPairingScreen
+import com.aadiinfo.nightwatch.ui.predictions.PredictionsScreen
 import com.aadiinfo.nightwatch.ui.setup.SetupScreen
 import com.aadiinfo.nightwatch.ui.theme.NightWatchTheme
 import com.google.firebase.Firebase
@@ -107,8 +110,9 @@ private fun LoadingScreen() {
 private enum class Tab(val label: String) {
     DASHBOARD("Dashboard"),
     HISTORY("History"),
+    PREDICTIONS("Predictions"),
     SETTINGS("Settings"),
-    PAIR_DEVICE("Alarm device")
+    PAIR_DEVICE("Alarm")
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -120,7 +124,7 @@ private fun MainScreen(
     onSignOut: () -> Unit
 ) {
     var tab by remember { mutableStateOf(Tab.DASHBOARD) }
-    val tabs = if (isOwner) Tab.entries else listOf(Tab.DASHBOARD, Tab.HISTORY)
+    val tabs = if (isOwner) Tab.entries else listOf(Tab.DASHBOARD, Tab.HISTORY, Tab.PREDICTIONS)
 
     Scaffold(
         topBar = {
@@ -140,7 +144,12 @@ private fun MainScreen(
                         selected = tab == t,
                         onClick = { tab = t },
                         icon = { Icon(tabIcon(t), contentDescription = t.label) },
-                        label = { Text(t.label) }
+                        // A wrapped two-line label makes that item's icon sit
+                        // out of alignment with the single-line ones next to
+                        // it - force single-line so a longer label (or a
+                        // larger system font size) degrades to an ellipsis
+                        // instead of breaking layout.
+                        label = { Text(t.label, maxLines = 1, overflow = TextOverflow.Ellipsis) }
                     )
                 }
             }
@@ -150,6 +159,7 @@ private fun MainScreen(
             when (tab) {
                 Tab.DASHBOARD -> DashboardScreen(patientRepository, patient.id)
                 Tab.HISTORY -> HistoryScreen(patientRepository, patient.id)
+                Tab.PREDICTIONS -> PredictionsScreen(patientRepository, patient.id)
                 Tab.SETTINGS -> if (isOwner) {
                     var editingConnection by remember { mutableStateOf(false) }
                     if (editingConnection) {
@@ -188,6 +198,7 @@ private fun MainScreen(
 private fun tabIcon(tab: Tab) = when (tab) {
     Tab.DASHBOARD -> Icons.Filled.Favorite
     Tab.HISTORY -> Icons.Filled.History
+    Tab.PREDICTIONS -> Icons.Filled.Insights
     Tab.SETTINGS -> Icons.Filled.Settings
     Tab.PAIR_DEVICE -> Icons.Filled.Bluetooth
 }

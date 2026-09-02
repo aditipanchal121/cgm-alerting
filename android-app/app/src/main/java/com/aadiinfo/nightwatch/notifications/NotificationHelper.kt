@@ -10,6 +10,7 @@ import android.media.AudioAttributes
 import android.provider.Settings
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
+import com.aadiinfo.nightwatch.MainActivity
 import com.aadiinfo.nightwatch.domain.model.Severity
 
 /**
@@ -70,6 +71,18 @@ object NotificationHelper {
         manager.createNotificationChannels(listOf(info, warning, critical, status))
     }
 
+    private fun mainActivityPendingIntent(context: Context): PendingIntent {
+        val intent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        return PendingIntent.getActivity(
+            context,
+            0,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+    }
+
     /** Ongoing, silent notification showing the latest actual reading - kept
      * separate from the alert channels above so it never buzzes, and always
      * reflects the real reading rather than a predicted/alert value. */
@@ -81,6 +94,7 @@ object NotificationHelper {
             .setOngoing(true)
             .setAutoCancel(false)
             .setOnlyAlertOnce(true)
+            .setContentIntent(mainActivityPendingIntent(context))
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setCategory(NotificationCompat.CATEGORY_STATUS)
 
@@ -103,6 +117,7 @@ object NotificationHelper {
             .setContentTitle(title)
             .setContentText(message)
             .setAutoCancel(true)
+            .setContentIntent(mainActivityPendingIntent(context))
             .setPriority(
                 if (severity == Severity.INFO) NotificationCompat.PRIORITY_LOW
                 else NotificationCompat.PRIORITY_HIGH
@@ -121,6 +136,7 @@ object NotificationHelper {
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
             builder.setFullScreenIntent(alarmPendingIntent, true)
+            builder.setContentIntent(alarmPendingIntent)
             builder.setCategory(NotificationCompat.CATEGORY_ALARM)
             // Some OEM skins don't reliably honor a full-screen intent from a
             // background-posted notification, so also launch it directly.

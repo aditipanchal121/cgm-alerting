@@ -37,6 +37,10 @@ export interface GlucoseReading {
    * likely a Gluroo-side glitch rather than a real zero. The zero is still
    * reported as-is; this only flags it as suspect. */
   iobUnreliable?: boolean;
+  /** Carbs on board, in grams, when Gluroo's devicestatus reports it. Not
+   * currently used by alerting or the on-device predictors - captured for
+   * future model training (see backend/README.md's data retention note). */
+  cob: number | null;
 }
 
 export interface AlertEvent {

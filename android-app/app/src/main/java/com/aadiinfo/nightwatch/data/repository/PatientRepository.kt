@@ -50,6 +50,14 @@ class PatientRepository(
             .snapshotFlow()
             .map { snapshot -> snapshot.documents.firstOrNull()?.toGlucoseReading() }
 
+    fun observeReadingsSince(patientId: String, sinceMs: Long): Flow<List<GlucoseReading>> =
+        firestore.collection("patients").document(patientId)
+            .collection("readings")
+            .whereGreaterThanOrEqualTo("dateMs", sinceMs)
+            .orderBy("dateMs", com.google.firebase.firestore.Query.Direction.ASCENDING)
+            .snapshotFlow()
+            .map { snapshot -> snapshot.documents.mapNotNull { it.toGlucoseReading() } }
+
     fun observeAlertHistory(patientId: String, limit: Long = 50): Flow<List<AlertEvent>> =
         firestore.collection("patients").document(patientId)
             .collection("alerts")

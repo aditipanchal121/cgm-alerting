@@ -15,6 +15,7 @@ data class DashboardUiState(
     val patient: Patient? = null,
     val reading: GlucoseReading? = null,
     val thresholds: Thresholds = Thresholds(),
+    val trend: List<GlucoseReading> = emptyList(),
     val loading: Boolean = true
 )
 
@@ -26,8 +27,9 @@ class DashboardViewModel(
     val uiState: StateFlow<DashboardUiState> = combine(
         patientRepository.observePatient(patientId),
         patientRepository.observeLatestReading(patientId),
-        patientRepository.observeThresholds(patientId)
-    ) { patient, reading, thresholds ->
-        DashboardUiState(patient = patient, reading = reading, thresholds = thresholds, loading = false)
+        patientRepository.observeThresholds(patientId),
+        patientRepository.observeReadingsSince(patientId, System.currentTimeMillis() - 24 * 60 * 60 * 1000)
+    ) { patient, reading, thresholds, trend ->
+        DashboardUiState(patient = patient, reading = reading, thresholds = thresholds, trend = trend, loading = false)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), DashboardUiState())
 }

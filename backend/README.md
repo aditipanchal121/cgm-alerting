@@ -35,8 +35,14 @@ See `firestore.rules` for the authoritative access model:
 - `patients/{patientId}` - one per person being monitored; owner + follower
   members live in `patients/{patientId}/members/{uid}`.
 - `patients/{patientId}/thresholds/current` - alert thresholds, owner-write only.
-- `patients/{patientId}/readings` - glucose/IOB history, written only by `pollGlucose`.
+- `patients/{patientId}/readings` - glucose/IOB/COB history, written only by
+  `pollGlucose`. Kept for a full year (a deliberate training-data retention
+  policy, not just an operational log) by the `cleanupOldReadings` scheduled
+  function - storage cost is trivial at this volume (~15-16 MB/year/patient),
+  this is about having an explicit, bounded policy rather than unbounded growth.
 - `patients/{patientId}/alerts` - alert event log, written only by `pollGlucose`.
+  A separate `cleanupOldAlerts` scheduled function deletes alerts older than
+  3 days once a day, so this doesn't grow without bound.
 - `devices/{deviceId}` - ESP32 pairing: `{ patientId, pairedAt, pairedBy }`.
 - Realtime Database `devices/{deviceId}/alert` - what the ESP32 firmware streams.
 

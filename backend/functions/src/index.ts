@@ -6,6 +6,7 @@ import { fetchRecentReadings, verifyConnection } from './nightscout';
 import { evaluateAlerts } from './alertEngine';
 import { sendAlertPush, sendReadingStatusPush } from './fcm';
 import { getPatientSecret, storePatientSecret } from './secretManager';
+import { deleteOldAlerts, deleteOldReadings } from './cleanup';
 import { AlertEvent, Thresholds } from './types';
 
 admin.initializeApp();
@@ -44,6 +45,21 @@ const DEFAULT_THRESHOLDS: Thresholds = {
 export const pollGlucose = onSchedule('every 5 minutes', async () => {
   const patientsSnap = await db().collection('patients').get();
   await Promise.all(patientsSnap.docs.map((doc) => pollOnePatient(doc.id, doc.data())));
+});
+
+/** Alerts are only ever shown as recent history in the app, and can be
+ * written every poll cycle a condition holds - without this, the alerts
+ * collection grows without bound. */
+export const cleanupOldAlerts = onSchedule('every 24 hours', async () => {
+  const deleted = await deleteOldAlerts(db());
+  console.log(`cleanupOldAlerts: deleted ${deleted} alert(s) older than the retention window`);
+});
+
+/** Readings are kept for a full year (see cleanup.ts) as a deliberate
+ * training-data retention policy, not left to grow unbounded by accident. */
+export const cleanupOldReadings = onSchedule('every 24 hours', async () => {
+  const deleted = await deleteOldReadings(db());
+  console.log(`cleanupOldReadings: deleted ${deleted} reading(s) older than the retention window`);
 });
 
 async function pollOnePatient(patientId: string, patient: FirebaseFirestore.DocumentData): Promise<void> {

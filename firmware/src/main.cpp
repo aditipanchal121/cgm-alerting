@@ -4,7 +4,9 @@
  * Polls the Firebase Realtime Database node this device is paired to
  * (/devices/{deviceId}/alert, written by the backend's pollGlucose
  * function - see ../backend) over plain HTTPS REST every POLL_INTERVAL_MS,
- * and drives a vibration motor when a WARNING/CRITICAL alert appears.
+ * and drives a vibration motor AND a piezo buzzer when a WARNING/CRITICAL
+ * alert appears - two independent physical channels so a person who sleeps
+ * through (or subconsciously tunes out) one still has the other.
  *
  * Deliberately uses plain HTTPClient + the Realtime Database REST API
  * instead of a Firebase C++ SDK: it's a smaller, more stable surface to
@@ -42,6 +44,12 @@ constexpr unsigned long TOKEN_REFRESH_MARGIN_MS = 5UL * 60 * 1000; // refresh 5 
 constexpr int VIBRATION_PIN = 26;
 constexpr int ACK_BUTTON_PIN = 27;
 constexpr int VIBRATION_PWM_CHANNEL = 0;
+
+// A passive piezo buzzer draws little enough current to drive directly from
+// the GPIO/LEDC output - unlike the vibration motor, it does not need a
+// transistor.
+constexpr int BUZZER_PIN = 25;
+constexpr int BUZZER_PWM_CHANNEL = 1;
 
 String deviceId;
 String idToken;
@@ -141,27 +149,48 @@ void setVibration(bool on, int intensity255 = 255) {
   ledcWrite(VIBRATION_PWM_CHANNEL, on ? intensity255 : 0);
 }
 
+void setBuzzer(bool on, double frequencyHz) {
+  if (on) {
+    ledcWriteTone(BUZZER_PWM_CHANNEL, frequencyHz);
+  } else {
+    ledcWrite(BUZZER_PWM_CHANNEL, 0);
+  }
+}
+
 String alarmSeverity;
 
 void triggerAlarm(const String &severity) {
   alarming = true;
   alarmSeverity = severity;
-  Serial.printf("ALERT (%s) - vibrating\n", severity.c_str());
+  Serial.printf("ALERT (%s) - vibrating and sounding\n", severity.c_str());
 }
 
-void serviceAlarmVibration() {
+void serviceAlarmOutputs() {
   if (!alarming) return;
 
-  // CRITICAL buzzes hard and near-continuously; WARNING pulses more gently
-  // (shorter pulse, longer rest, lower intensity). Pattern is re-evaluated
-  // every loop() call using millis() so it needs no blocking delay() (which
-  // would stall WiFi polling and button reads).
+  // Both channels are re-evaluated every loop() call using millis(), so
+  // neither needs a blocking delay() (which would stall WiFi polling and
+  // button reads). Vibration and buzzer cadences are independent - the two
+  // channels are meant to be redundant backups for each other, not a single
+  // synchronized effect, so one being slept through doesn't matter as long
+  // as the other gets noticed.
   if (alarmSeverity == "CRITICAL") {
-    unsigned long t = millis() % 2000;
-    setVibration(t < 1800, 255);
+    // Vibration: near-continuous at full intensity.
+    unsigned long vibT = millis() % 2000;
+    setVibration(vibT < 1800, 255);
+
+    // Buzzer: fast, high-pitched, urgent beeping.
+    unsigned long beepT = millis() % 250;
+    setBuzzer(beepT < 150, 3000);
   } else {
-    unsigned long t = millis() % 3000;
-    setVibration(t < 600, 160);
+    // Vibration: short pulse, long rest, lower intensity.
+    unsigned long vibT = millis() % 3000;
+    setVibration(vibT < 600, 160);
+
+    // Buzzer: a single short, lower-pitched beep - noticeably calmer than
+    // the CRITICAL pattern.
+    unsigned long beepT = millis() % 1500;
+    setBuzzer(beepT < 200, 1500);
   }
 }
 
@@ -172,6 +201,7 @@ void checkAckButton() {
     }
     alarming = false;
     setVibration(false);
+    setBuzzer(false, 0);
   }
 }
 
@@ -209,6 +239,7 @@ void pollAlert() {
     } else {
       alarming = false;
       setVibration(false);
+      setBuzzer(false, 0);
     }
   }
 }
@@ -228,13 +259,16 @@ void setup() {
   ledcSetup(VIBRATION_PWM_CHANNEL, 5000, 8);
   ledcAttachPin(VIBRATION_PIN, VIBRATION_PWM_CHANNEL);
 
+  ledcSetup(BUZZER_PWM_CHANNEL, 2000, 8);
+  ledcAttachPin(BUZZER_PIN, BUZZER_PWM_CHANNEL);
+
   connectWiFi();
   signInAnonymously();
 }
 
 void loop() {
   checkAckButton();
-  serviceAlarmVibration();
+  serviceAlarmOutputs();
 
   if (millis() - lastPollAtMs >= POLL_INTERVAL_MS) {
     lastPollAtMs = millis();

@@ -31,7 +31,7 @@ export async function fetchRecentReadings(
   );
   if (!entries.length) return [];
 
-  const iob = await fetchIob(trimmedBase, apiSecret);
+  const { iob, cob } = await fetchDeviceStatus(trimmedBase, apiSecret);
   // Nightscout returns newest-first; callers want oldest-first for trend math.
   return entries
     .slice()
@@ -41,17 +41,23 @@ export async function fetchRecentReadings(
       direction: e.direction ?? 'NOT COMPUTABLE',
       dateMs: e.date,
       iob: i === arr.length - 1 ? iob : null,
+      cob: i === arr.length - 1 ? cob : null,
     }));
 }
 
-async function fetchIob(trimmedBase: string, apiSecret: string): Promise<number | null> {
+interface DeviceStatus {
+  iob: number | null;
+  cob: number | null;
+}
+
+async function fetchDeviceStatus(trimmedBase: string, apiSecret: string): Promise<DeviceStatus> {
   try {
     const statuses = await getJson<Array<Record<string, any>>>(
       `${trimmedBase}/api/v1/devicestatus.json?count=1`,
       apiSecret
     );
     const status = statuses[0];
-    if (!status) return null;
+    if (!status) return { iob: null, cob: null };
     // IOB shape depends on which loop system feeds Gluroo - check known shapes.
     const iob =
       status?.glurooIob ??
@@ -60,10 +66,18 @@ async function fetchIob(trimmedBase: string, apiSecret: string): Promise<number 
       (Array.isArray(status?.openaps?.iob) ? status.openaps.iob[0]?.iob : undefined) ??
       status?.pump?.iob?.bolusiob ??
       null;
-    return typeof iob === 'number' ? iob : null;
+    const cob =
+      status?.glurooCob ??
+      status?.loop?.cob ??
+      status?.openaps?.cob ??
+      null;
+    return {
+      iob: typeof iob === 'number' ? iob : null,
+      cob: typeof cob === 'number' ? cob : null,
+    };
   } catch {
     // devicestatus is optional - a Gluroo account with no loop system won't have it.
-    return null;
+    return { iob: null, cob: null };
   }
 }
 

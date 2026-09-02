@@ -1,9 +1,12 @@
 # NightWatch haptic alarm device (ESP32)
 
-A dedicated, purpose-built vibrating alarm for CGM alerts - built ahead of
+A dedicated, purpose-built bedside alarm for CGM alerts - built ahead of
 the Wear OS extension per the project's priorities. Polls the Firebase
 Realtime Database node the backend writes to (`../backend`), independent of
-the phone, over WiFi.
+the phone, over WiFi. Drives two independent physical channels - vibration
+and a piezo buzzer - on the theory that a sound alone can be slept through
+or subconsciously tuned out, so the vibration is there as a backup wake
+channel and vice versa.
 
 ## Hardware
 
@@ -12,7 +15,16 @@ the phone, over WiFi.
 - Vibration motor driven through a transistor/MOSFET on `VIBRATION_PIN`
   (GPIO26 by default) - do not drive a motor directly from a GPIO pin.
   For a stronger, patterned buzz, swap in a haptic driver IC like the
-  DRV2605 instead of a bare motor + MOSFET.
+  DRV2605 instead of a bare motor + MOSFET. A bedside unit isn't worn, so a
+  larger/stronger motor than a wearable would use is fine here - the
+  firmware's CRITICAL pattern is already near-continuous, full-intensity
+  PWM, so a stronger motor directly translates to a more intense alarm with
+  no code changes needed.
+- A passive piezo buzzer on `BUZZER_PIN` (GPIO25 by default) for the audible
+  alarm - unlike the motor, a piezo disc draws little enough current to
+  drive directly from the GPIO/LEDC output, no transistor needed. For a
+  louder or more pleasant tone than a piezo can produce, swap in a small
+  speaker driven through a class-D amp board (e.g. a PAM8403 module) instead.
 - A momentary push button between `ACK_BUTTON_PIN` (GPIO27) and GND
   (the firmware uses `INPUT_PULLUP`, so no external resistor needed) to
   silence an alarm locally.
