@@ -8,5 +8,7 @@ package com.aadiinfo.nightwatch.domain
  */
 val availablePredictors: List<GlucosePredictor> = listOf(
     LinearRegressionPredictor(),
-    IobAwarePredictor()
+    IobAwarePredictor(),
+    DirectionAwarePredictor(),
+    QuadraticPredictor()
 )

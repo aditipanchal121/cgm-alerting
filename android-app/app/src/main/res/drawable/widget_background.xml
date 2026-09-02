@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Fixed dark background rather than trying to match the host launcher's
+    light/dark theme - reliably legible on any wallpaper/launcher without
+    needing per-launcher theme detection, at the cost of not blending in.
+-->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="#DD1B1B1B" />
+    <corners android:radius="16dp" />
+</shape>

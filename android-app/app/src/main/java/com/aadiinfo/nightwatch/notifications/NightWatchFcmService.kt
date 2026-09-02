@@ -62,5 +62,6 @@ class NightWatchFcmService : FirebaseMessagingService() {
         }
 
         NotificationHelper.updateReadingStatus(applicationContext, title, text)
+        GlucoseWidgetProvider.updateFromReading(applicationContext, "$sgv mg/dL $arrow", text)
     }
 }

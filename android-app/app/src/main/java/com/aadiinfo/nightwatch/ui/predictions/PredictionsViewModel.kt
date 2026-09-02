@@ -12,7 +12,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 
-data class PredictorOutput(val predictorName: String, val result: PredictionResult)
+data class PredictorOutput(val predictorName: String, val description: String, val result: PredictionResult)
 
 data class PredictionsUiState(
     val recentReadings: List<GlucoseReading> = emptyList(),
@@ -35,7 +35,7 @@ class PredictionsViewModel(
         patientRepository.observeThresholds(patientId)
     ) { readings, thresholds ->
         val outputs = availablePredictors.map { predictor ->
-            PredictorOutput(predictor.name, predictor.predict(readings, thresholds))
+            PredictorOutput(predictor.name, predictor.description, predictor.predict(readings, thresholds))
         }
         PredictionsUiState(
             recentReadings = readings,
@@ -46,9 +46,18 @@ class PredictionsViewModel(
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), PredictionsUiState())
 
     private companion object {
-        // Matches the ~30 min horizon predictors project toward - enough
-        // recent context for a short-term extrapolation without diluting it
-        // with data too old to be relevant to "what happens in 30 minutes."
-        const val RECENT_WINDOW_MS = 60 * 60 * 1000L
+        // Matches the backend's own PREDICTED_LOW window (alertEngine.ts calls
+        // predictMinutesToThreshold with the same ~6 recent Gluroo entries
+        // pollGlucose just fetched, i.e. ~30 min at Gluroo's ~5-min cadence).
+        // This used to be 60 minutes here, which meant this tab's linear
+        // regression was diluting a recent sharp trend with an extra half
+        // hour of older data the backend's alert never saw - the two could
+        // legitimately disagree on whether a threshold crossing is projected,
+        // not because of a bug in either predictor, but because they were
+        // structurally different calculations. Keeping the window matched
+        // means only genuine staleness (the notification reflects the trend
+        // as of whenever it fired; this tab is always live) explains any
+        // remaining disagreement.
+        const val RECENT_WINDOW_MS = 30 * 60 * 1000L
     }
 }

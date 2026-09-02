@@ -40,6 +40,14 @@ object NotificationHelper {
             NotificationManager.IMPORTANCE_LOW
         ).apply {
             setShowBadge(false)
+            // Public so the reading shows directly on the lock screen without
+            // unlocking - this is the actual mechanism behind it (a real
+            // system-level Always On Display canvas isn't something a
+            // third-party app can draw custom content into on stock Android;
+            // a lock-screen-visible persistent notification is the standard
+            // way CGM companion apps like this achieve the same glanceable
+            // result).
+            lockscreenVisibility = Notification.VISIBILITY_PUBLIC
         }
 
         val warning = NotificationChannel(
@@ -97,6 +105,7 @@ object NotificationHelper {
             .setContentIntent(mainActivityPendingIntent(context))
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setCategory(NotificationCompat.CATEGORY_STATUS)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
 
         try {
             NotificationManagerCompat.from(context).notify(STATUS_NOTIFICATION_ID, builder.build())

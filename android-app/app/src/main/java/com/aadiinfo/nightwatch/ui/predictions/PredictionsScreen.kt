@@ -8,22 +8,32 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -56,34 +66,44 @@ fun PredictionsScreen(patientRepository: PatientRepository, patientId: String) {
         viewModel(factory = vmFactory { PredictionsViewModel(patientRepository, patientId) })
     val state by viewModel.uiState.collectAsState()
 
-    Column(
+    // LazyColumn rather than a plain Column+verticalScroll: it's the same
+    // scrolling container HistoryScreen already uses for its list, and
+    // keeping scrolling item-based (header/chart as one item, each
+    // predictor card as its own) avoids relying on a single tall Column to
+    // report the right scrollable height as content is added below the fold.
+    LazyColumn(
         modifier = Modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
             .padding(24.dp)
     ) {
-        Text("Predictions", style = MaterialTheme.typography.headlineSmall)
-        Spacer(Modifier.height(4.dp))
-        Text(
-            "Beta - on-device forecasting experiments, recomputed automatically whenever " +
-                "a new reading arrives (about every 5 minutes, matching the backend's poll " +
-                "cycle). These don't drive alerts; the backend's own predictor does that " +
-                "independently.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Spacer(Modifier.height(24.dp))
+        item {
+            Text("Predictions", style = MaterialTheme.typography.headlineSmall)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "Beta - on-device forecasting experiments, recomputed automatically whenever " +
+                    "a new reading arrives (about every 5 minutes, matching the backend's poll " +
+                    "cycle). These don't drive alerts; the backend's own predictor does that " +
+                    "independently.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(24.dp))
+        }
 
         when {
-            state.loading -> CircularProgressIndicator()
-            state.recentReadings.size < 2 -> Text(
-                "Not enough recent readings yet to run predictions.",
-                style = MaterialTheme.typography.bodyMedium
-            )
+            state.loading -> item { CircularProgressIndicator() }
+            state.recentReadings.size < 2 -> item {
+                Text(
+                    "Not enough recent readings yet to run predictions.",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
             else -> {
-                PredictionChart(state.recentReadings, state.outputs, state.thresholds)
-                Spacer(Modifier.height(16.dp))
-                state.outputs.forEach { output ->
+                item {
+                    PredictionChart(state.recentReadings, state.outputs, state.thresholds)
+                    Spacer(Modifier.height(8.dp))
+                }
+                items(state.outputs) { output ->
                     PredictorCard(output)
                     Spacer(Modifier.height(12.dp))
                 }
@@ -92,6 +112,7 @@ fun PredictionsScreen(patientRepository: PatientRepository, patientId: String) {
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun PredictionChart(
     readings: List<GlucoseReading>,
@@ -189,9 +210,18 @@ private fun PredictionChart(
         }
 
         Spacer(Modifier.height(8.dp))
-        Row(modifier = Modifier.padding(start = 40.dp)) {
+        // FlowRow rather than a plain Row: with 4 predictors now (after
+        // Quadratic moved out on its own), longer names like "Direction-aware
+        // (windowed)" no longer reliably fit on one line - this wraps to a
+        // second line instead of overflowing/clipping past the screen edge.
+        FlowRow(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 40.dp),
+            horizontalArrangement = Arrangement.spacedBy(16.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
             outputs.forEachIndexed { index, output ->
-                if (index > 0) Spacer(Modifier.width(16.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Box(
                         modifier = Modifier
@@ -208,14 +238,39 @@ private fun PredictionChart(
 
 @Composable
 private fun PredictorCard(output: PredictorOutput) {
+    // A dialog rather than inline text: the earlier press-and-hold-to-reveal
+    // design broke down for cards near the bottom of the list, since the
+    // description could render past the visible viewport with no way to
+    // scroll to it (releasing the hold to scroll immediately hid it again).
+    // A dialog renders as its own overlay independent of this list's scroll
+    // position, so it's never cut off regardless of which card triggered it.
+    var showDescription by remember { mutableStateOf(false) }
+
     Surface(
         modifier = Modifier.fillMaxWidth(),
         color = MaterialTheme.colorScheme.surfaceVariant,
         shape = MaterialTheme.shapes.medium
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
-            Text(output.predictorName, style = MaterialTheme.typography.titleSmall)
-            Spacer(Modifier.height(4.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    output.predictorName,
+                    style = MaterialTheme.typography.titleSmall,
+                    modifier = Modifier.weight(1f)
+                )
+                IconButton(
+                    onClick = { showDescription = true },
+                    modifier = Modifier.size(28.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.Info,
+                        contentDescription = "About ${output.predictorName}",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
+            Spacer(Modifier.height(8.dp))
             Text(
                 "Projected in 30 min: ${output.result.projectedValue.roundToInt()} mg/dL",
                 style = MaterialTheme.typography.bodyMedium
@@ -232,5 +287,16 @@ private fun PredictorCard(output: PredictorOutput) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
+    }
+
+    if (showDescription) {
+        AlertDialog(
+            onDismissRequest = { showDescription = false },
+            confirmButton = {
+                TextButton(onClick = { showDescription = false }) { Text("Close") }
+            },
+            title = { Text(output.predictorName) },
+            text = { Text(output.description) }
+        )
     }
 }
