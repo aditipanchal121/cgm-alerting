@@ -8,7 +8,8 @@ export type AlertType =
   | 'IOB_HIGH'
   | 'IOB_UNRELIABLE'
   | 'STALE_DATA'
-  | 'PREDICTED_LOW';
+  | 'PREDICTED_LOW'
+  | 'COMPRESSION_LOW';
 
 export interface Thresholds {
   units: 'mgdl' | 'mmol';

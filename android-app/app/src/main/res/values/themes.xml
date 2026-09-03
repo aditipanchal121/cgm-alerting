@@ -1,9 +1,26 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
-    <style name="Theme.NightWatch" parent="android:Theme.Material.Light.NoActionBar" />
+    <style name="Theme.Vigil" parent="android:Theme.Material.Light.NoActionBar" />
 
     <!-- Alarm activity theme: shows over the lock screen, so keep it a plain
          full-bleed theme with no action bar chrome. -->
-    <style name="Theme.NightWatch.Alarm" parent="android:Theme.Material.NoActionBar">
+    <style name="Theme.Vigil.Alarm" parent="android:Theme.Material.NoActionBar">
         <item name="android:windowIsTranslucent">false</item>
+    </style>
+
+    <!-- MainActivity's manifest theme only. Extends the core-splashscreen
+         compat theme rather than just setting a black windowBackground -
+         Android 12+ shows its OWN cold-start splash automatically no matter
+         what (there's no way to opt out on API 31+), defaulting to the
+         adaptive launcher icon stretched up to splash size; since that icon
+         foreground is deliberately small/safe-zone-constrained for its own
+         different purpose, the default looked blurry. Configuring these
+         attributes explicitly is what lets a purpose-built, high-res icon
+         (vigil_splash_icon) show there instead. installSplashScreen() in
+         MainActivity applies postSplashScreenTheme once the splash ends -
+         this theme is never visible past that point. -->
+    <style name="Theme.Vigil.Launch" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/ic_launcher_background</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/vigil_splash_icon</item>
+        <item name="postSplashScreenTheme">@style/Theme.Vigil</item>
     </style>
 </resources>

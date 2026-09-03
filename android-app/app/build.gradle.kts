@@ -52,6 +52,12 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.activity:activity-compose:1.9.2")
+    // Cross-version wrapper for the API 31+ SplashScreen framework - lets us
+    // control what the OS's own unavoidable cold-start splash actually shows
+    // (a crisp, purpose-built icon) instead of it defaulting to stretching
+    // the adaptive launcher icon's foreground, which looked blurry blown up
+    // to splash size.
+    implementation("androidx.core:core-splashscreen:1.0.1")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.6")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.6")
     implementation("androidx.core:core-ktx:1.13.1")

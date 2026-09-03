@@ -1,4 +1,4 @@
-# NightWatch
+# Vigil
 
 Nighttime glucose monitoring and alerting, built on Gluroo's
 Nightscout-compatible API (Gluroo Global Connect). Three cooperating

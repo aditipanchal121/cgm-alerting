@@ -5,7 +5,7 @@ import java.util.TimeZone
 enum class Severity { INFO, WARNING, CRITICAL }
 
 enum class AlertType {
-    LOW, URGENT_LOW, HIGH, URGENT_HIGH, IOB_HIGH, IOB_UNRELIABLE, STALE_DATA, PREDICTED_LOW
+    LOW, URGENT_LOW, HIGH, URGENT_HIGH, IOB_HIGH, IOB_UNRELIABLE, STALE_DATA, PREDICTED_LOW, COMPRESSION_LOW
 }
 
 /** Mirrors Nightscout's `direction` values so the dashboard can show a trend arrow. */

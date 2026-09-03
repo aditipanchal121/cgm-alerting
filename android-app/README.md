@@ -1,4 +1,4 @@
-# NightWatch Android app
+# Vigil Android app
 
 Kotlin + Jetpack Compose client for the Firebase backend in `../backend`.
 The backend does the reliability-critical polling of Gluroo; this app is a
@@ -30,7 +30,7 @@ device.
 - `notifications/AlarmActivity.kt` is the "wake the user" groundwork:
   full-screen, shows over the lock screen, loops an alarm-usage sound and
   vibration until dismissed. It's launched both via a full-screen-intent
-  notification and directly from `NightWatchFcmService`, since some OEM
+  notification and directly from `VigilFcmService`, since some OEM
   Android skins don't reliably honor full-screen intents from a
   background-posted notification alone.
 - `ui/mcupairing/McuPairingScreen.kt` pairs an ESP32 (see `../firmware`) by

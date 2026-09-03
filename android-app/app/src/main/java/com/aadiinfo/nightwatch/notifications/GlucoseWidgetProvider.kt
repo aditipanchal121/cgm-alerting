@@ -15,7 +15,7 @@ import com.aadiinfo.nightwatch.R
  * standard, fully-supported Android feature, unlike a real system Always On
  * Display canvas, which a third-party app can't draw custom content into.
  *
- * Kept current by [updateFromReading], called from [NightWatchFcmService]
+ * Kept current by [updateFromReading], called from [VigilFcmService]
  * every time a "reading" data message arrives (the same trigger that
  * updates the persistent status notification) - not by the OS's own widget
  * update schedule, which the platform clamps to a 30-minute floor

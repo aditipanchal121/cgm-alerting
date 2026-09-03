@@ -28,6 +28,15 @@ function rtdb(): admin.database.Database {
 
 const projectId = process.env.GCLOUD_PROJECT!;
 
+/** Temporarily off while testing the externalIob (notification-reader)
+ * override path - with this on, a patient whose external reporting isn't
+ * yet confirmed working still runs Gluroo's own glitch heuristic every
+ * cycle, and an "iobUnreliable" flag from THAT can be confused for a
+ * problem with the new reporting path being tested. The heuristic itself
+ * (see pollOnePatient) is unchanged and still fully wired up - flip this
+ * back to true once external reporting is confirmed reliable. */
+const GLUROO_IOB_GLITCH_DETECTION_ENABLED = false;
+
 const DEFAULT_THRESHOLDS: Thresholds = {
   units: 'mgdl',
   lowMgdl: 80,
@@ -94,10 +103,10 @@ async function pollOnePatient(patientId: string, patient: FirebaseFirestore.Docu
       // doesn't apply to it.
       latest.iob = externalIob;
       latest.iobUnreliable = false;
-    } else if (latest.iob === 0) {
+    } else if (GLUROO_IOB_GLITCH_DETECTION_ENABLED && latest.iob === 0) {
       const lastNonZeroIob = typeof patient.lastNonZeroIob === 'number' ? patient.lastNonZeroIob : null;
       latest.iobUnreliable = lastNonZeroIob !== null && lastNonZeroIob > 0.5;
-    } else if (latest.iob !== null) {
+    } else if (GLUROO_IOB_GLITCH_DETECTION_ENABLED && latest.iob !== null) {
       await db().collection('patients').doc(patientId).update({ lastNonZeroIob: latest.iob });
     }
 
@@ -110,7 +119,7 @@ async function pollOnePatient(patientId: string, patient: FirebaseFirestore.Docu
     // Always driven by the actual reading, independent of whether it crossed
     // any alert threshold - this keeps a persistent status notification
     // current, separate from the low/high/predictive alert notifications.
-    await sendReadingStatusPush(patientId, patient.displayName ?? 'NightWatch', latest);
+    await sendReadingStatusPush(patientId, patient.displayName ?? 'Vigil', latest);
 
     const thresholdsDoc = await db()
       .collection('patients')
@@ -125,7 +134,7 @@ async function pollOnePatient(patientId: string, patient: FirebaseFirestore.Docu
     for (const event of events) {
       await db().collection('patients').doc(patientId).collection('alerts').add(event);
       if (event.severity !== 'INFO') {
-        await sendAlertPush(patientId, patient.displayName ?? 'NightWatch', event);
+        await sendAlertPush(patientId, patient.displayName ?? 'Vigil', event);
       }
     }
 
@@ -194,26 +203,68 @@ export const savePatientCredentials = onCall(async (request) => {
   return { ok: true };
 });
 
-/** Owner-only: designates which signed-in user's device is trusted to
- * report IOB directly (e.g. via a NotificationListenerService reading a
- * pump app's own notification) instead of relying solely on Gluroo's own
- * devicestatus IOB. The actual write permission is enforced by
- * firestore.rules checking this field, not by anything client-side -
- * this callable is just how it gets set in the first place. */
-export const setIobSource = onCall(async (request) => {
+/** Self-service: the caller becomes the trusted IOB source for this patient
+ * directly - deliberately no owner-approval step. Knowing the patientId is
+ * already this app's de facto shared-secret boundary (the same trust model
+ * ESP32 device pairing uses), so requiring a *second* handshake here - the
+ * owner manually copying the reporting device's UID - was unnecessary
+ * friction for a single-family prototype. Whoever most recently claims it
+ * wins; re-claiming (e.g. after switching which phone reports) is just
+ * calling this again. */
+export const claimIobSource = onCall(async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Sign in required.');
-  const { patientId, sourceUid } = (request.data ?? {}) as { patientId?: string; sourceUid?: string };
-  if (!patientId || !sourceUid) {
-    throw new HttpsError('invalid-argument', 'patientId and sourceUid are required.');
+  const { patientId } = (request.data ?? {}) as { patientId?: string };
+  if (!patientId) {
+    throw new HttpsError('invalid-argument', 'patientId is required.');
   }
 
   const patientDoc = await db().collection('patients').doc(patientId).get();
-  if (!patientDoc.exists || patientDoc.data()?.ownerUid !== request.auth.uid) {
-    throw new HttpsError('permission-denied', 'Only the patient owner can set the IOB source.');
+  if (!patientDoc.exists) {
+    throw new HttpsError('not-found', 'No patient with that ID.');
   }
 
-  await db().collection('patients').doc(patientId).update({ iobSourceUid: sourceUid });
-  return { ok: true };
+  await db().collection('patients').doc(patientId).update({ iobSourceUid: request.auth.uid });
+  // Returned so the app can show *whose* record this device just linked to -
+  // patientId alone is an opaque string a caretaker can't visually verify,
+  // and entering the wrong one (e.g. their own record's ID instead of the
+  // person they're reporting for) previously succeeded silently with no way
+  // to notice the mistake.
+  return { ok: true, displayName: patientDoc.data()?.displayName ?? '' };
+});
+
+/** Self-service: lets a signed-in user become a read-only follower on a
+ * patient directly, given only the patientId - the app never had a UI to
+ * send/accept an invite in the first place, so this replaces inviteFollower
+ * (which nothing ever called) with the same shared-secret trust model as
+ * claimIobSource: whoever has the patientId (shared out-of-band, e.g. via
+ * the copy button in Settings) can add themselves. */
+export const joinPatientAsFollower = onCall(async (request) => {
+  if (!request.auth) throw new HttpsError('unauthenticated', 'Sign in required.');
+  const { patientId, displayName: followerDisplayName } = (request.data ?? {}) as {
+    patientId?: string;
+    displayName?: string;
+  };
+  if (!patientId) {
+    throw new HttpsError('invalid-argument', 'patientId is required.');
+  }
+
+  const patientRef = db().collection('patients').doc(patientId);
+  const patientDoc = await patientRef.get();
+  if (!patientDoc.exists) {
+    throw new HttpsError('not-found', 'No patient with that ID.');
+  }
+
+  const uid = request.auth.uid;
+  if (patientDoc.data()?.ownerUid !== uid) {
+    await patientRef.update({ memberUids: admin.firestore.FieldValue.arrayUnion(uid) });
+    await patientRef.collection('members').doc(uid).set({
+      role: 'follower',
+      displayName: followerDisplayName || request.auth.token.name || request.auth.token.email || 'Follower',
+    });
+  }
+  // Same reasoning as claimIobSource's return value - confirms which
+  // patient record was just joined rather than a bare "ok".
+  return { ok: true, displayName: patientDoc.data()?.displayName ?? '' };
 });
 
 /** Fires within seconds of the designated IOB source device writing a fresh

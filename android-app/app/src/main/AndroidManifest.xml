@@ -7,23 +7,25 @@
     <uses-permission android:name="android.permission.VIBRATE" />
 
     <application
-        android:name=".NightWatchApplication"
+        android:name=".VigilApplication"
         android:allowBackup="true"
         android:label="@string/app_name"
-        android:theme="@style/Theme.NightWatch"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:theme="@style/Theme.Vigil"
         android:supportsRtl="true">
 
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:theme="@style/Theme.NightWatch">
+            android:theme="@style/Theme.Vigil.Launch">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
 
-        <!-- Full-screen critical alert: launched from NightWatchFcmService when a
+        <!-- Full-screen critical alert: launched from VigilFcmService when a
              CRITICAL severity push arrives, so it can wake/interrupt like an alarm
              clock instead of sitting quietly in the notification shade. -->
         <activity
@@ -33,10 +35,10 @@
             android:turnScreenOn="true"
             android:excludeFromRecents="true"
             android:launchMode="singleTop"
-            android:theme="@style/Theme.NightWatch.Alarm" />
+            android:theme="@style/Theme.Vigil.Alarm" />
 
         <service
-            android:name=".notifications.NightWatchFcmService"
+            android:name=".notifications.VigilFcmService"
             android:exported="false">
             <intent-filter>
                 <action android:name="com.google.firebase.MESSAGING_EVENT" />

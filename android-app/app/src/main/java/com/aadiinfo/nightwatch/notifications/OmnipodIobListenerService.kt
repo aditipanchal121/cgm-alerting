@@ -4,6 +4,7 @@ import android.app.Notification
 import android.content.Context
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
+import android.util.Log
 import com.google.firebase.Firebase
 import com.google.firebase.auth.auth
 import com.google.firebase.firestore.firestore
@@ -14,13 +15,15 @@ import kotlinx.coroutines.tasks.await
 
 /**
  * Reads IOB directly from the Omnipod 5 app's own persistent "Automated
- * Mode" notification, as a more reliable alternative to Gluroo's IOB feed
- * (which has been unreliable - see backend/functions/src/externalIob.ts).
- * Writes to patients/{patientId}/externalIob/current, which
- * firestore.rules only accepts from the UID the patient's owner has
- * designated via setIobSource - this service running and this device's
- * local toggle being on does nothing by itself unless that designation
- * matches the signed-in account.
+ * Mode" / "Manual Mode" notification, as a more reliable alternative to
+ * Gluroo's IOB feed (which has been unreliable - see
+ * backend/functions/src/externalIob.ts). Writes to
+ * patients/{patientId}/externalIob/current, which firestore.rules only
+ * accepts from the UID that most recently self-claimed IOB-source status
+ * for that patient via the claimIobSource callable (see
+ * IobSourceSetupScreen) - this service running and this device's local
+ * toggle being on does nothing by itself unless that claim matches the
+ * signed-in account.
  *
  * Ships in every install of the app rather than a separate build; it's
  * inert until IobSourceSetupScreen's toggle is turned on locally AND
@@ -30,21 +33,58 @@ import kotlinx.coroutines.tasks.await
  */
 class OmnipodIobListenerService : NotificationListenerService() {
 
+    override fun onListenerConnected() {
+        super.onListenerConnected()
+        Log.d(TAG, "Notification listener connected")
+    }
+
     override fun onNotificationPosted(sbn: StatusBarNotification) {
         super.onNotificationPosted(sbn)
 
         val packageName = sbn.packageName.lowercase()
         if (!packageName.contains("insulet") && !packageName.contains("omnipod")) return
+        Log.d(TAG, "Notification from $packageName")
 
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        if (!prefs.getBoolean(KEY_ENABLED, false)) return
-        val patientId = prefs.getString(KEY_PATIENT_ID, null) ?: return
+        if (!prefs.getBoolean(KEY_ENABLED, false)) {
+            Log.d(TAG, "Ignoring - reporting is disabled locally")
+            return
+        }
+        val patientId = prefs.getString(KEY_PATIENT_ID, null)
+        if (patientId == null) {
+            Log.d(TAG, "Ignoring - no patient ID configured")
+            return
+        }
 
+        // Omnipod puts the IOB value in the notification TITLE ("Automated
+        // Mode (IOB: 3.85 U)") - android.text/subText are both null on this
+        // notification, confirmed via logcat. Rather than hard-coding just
+        // that one field, every text-bearing extra is concatenated and
+        // searched together: the regex below only matches an actual
+        // "IOB: <number>U" substring, so combining fields is safe, and it
+        // means this keeps working if a future Omnipod update moves the
+        // text to a different field again.
         val extras = sbn.notification.extras
-        val text = (extras.getCharSequence(Notification.EXTRA_BIG_TEXT)
-            ?: extras.getCharSequence(Notification.EXTRA_TEXT))?.toString() ?: return
+        val text = listOfNotNull(
+            extras.getCharSequence(Notification.EXTRA_TITLE)?.toString(),
+            extras.getCharSequence(Notification.EXTRA_TITLE_BIG)?.toString(),
+            extras.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString(),
+            extras.getCharSequence(Notification.EXTRA_TEXT)?.toString(),
+            extras.getCharSequenceArray(Notification.EXTRA_TEXT_LINES)?.joinToString("\n"),
+            extras.getCharSequence(Notification.EXTRA_SUB_TEXT)?.toString(),
+            extras.getCharSequence(Notification.EXTRA_SUMMARY_TEXT)?.toString()
+        ).joinToString("\n").ifBlank { null }
+        if (text == null) {
+            Log.w(TAG, "Notification had no usable text extra. Keys present: ${extras.keySet().joinToString()}")
+            return
+        }
+        Log.d(TAG, "Notification text: $text")
 
-        val iob = IOB_REGEX.find(text)?.groupValues?.get(1)?.toDoubleOrNull() ?: return
+        val iob = IOB_REGEX.find(text)?.groupValues?.get(1)?.toDoubleOrNull()
+        if (iob == null) {
+            Log.w(TAG, "Could not find an IOB value in: $text")
+            return
+        }
 
         val nowMs = System.currentTimeMillis()
         // Stored as raw bits via a Long, not a Float - SharedPreferences has
@@ -68,13 +108,18 @@ class OmnipodIobListenerService : NotificationListenerService() {
         val minIntervalElapsed = nowMs - lastWrittenAtMs >= MIN_WRITE_INTERVAL_MS
         if (!minIntervalElapsed || (!valueChanged && !heartbeatDue)) return
 
-        val uid = Firebase.auth.currentUser?.uid ?: return
+        val uid = Firebase.auth.currentUser?.uid
+        if (uid == null) {
+            Log.w(TAG, "Ignoring - not signed in")
+            return
+        }
 
         prefs.edit()
             .putLong(KEY_LAST_IOB, iob.toRawBits())
             .putLong(KEY_LAST_WRITTEN_AT, nowMs)
             .apply()
 
+        Log.d(TAG, "Writing iob=$iob for patient=$patientId as uid=$uid")
         CoroutineScope(Dispatchers.IO).launch {
             runCatching {
                 Firebase.firestore
@@ -82,11 +127,16 @@ class OmnipodIobListenerService : NotificationListenerService() {
                     .collection("externalIob").document("current")
                     .set(mapOf("iob" to iob, "reportedAt" to nowMs, "reportedBy" to uid))
                     .await()
+            }.onSuccess {
+                Log.d(TAG, "Write succeeded")
+            }.onFailure {
+                Log.e(TAG, "Write failed", it)
             }
         }
     }
 
     companion object {
+        private const val TAG = "OmnipodIobListener"
         private const val PREFS_NAME = "omnipod_iob_listener_prefs"
         private const val KEY_ENABLED = "enabled"
         private const val KEY_PATIENT_ID = "patient_id"

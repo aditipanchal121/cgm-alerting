@@ -132,7 +132,7 @@ private fun PredictionChart(
 
     val minValue = 40f
     val maxReadingSgv = readings.maxOf { it.sgv }.toFloat()
-    val maxProjected = outputs.maxOfOrNull { it.result.projectedValue.toFloat() } ?: maxReadingSgv
+    val maxProjected = outputs.mapNotNull { it.result.projectedValue }.maxOfOrNull { it.toFloat() } ?: maxReadingSgv
     val maxValue = max(300f, max(maxReadingSgv, maxProjected) + 20f)
 
     Column {
@@ -180,10 +180,11 @@ private fun PredictionChart(
 
                     val start = Offset(xFor(lastReading.dateMs), yFor(lastReading.sgv.toFloat()))
                     outputs.forEachIndexed { index, output ->
+                        val projectedValue = output.result.projectedValue ?: return@forEachIndexed
                         val color = PREDICTOR_COLORS[index % PREDICTOR_COLORS.size]
                         val end = Offset(
                             xFor(lastReading.dateMs + horizonMs),
-                            yFor(output.result.projectedValue.toFloat())
+                            yFor(projectedValue.toFloat())
                         )
                         drawLine(
                             color,
@@ -271,21 +272,28 @@ private fun PredictorCard(output: PredictorOutput) {
                 }
             }
             Spacer(Modifier.height(8.dp))
-            Text(
-                "Projected in 30 min: ${output.result.projectedValue.roundToInt()} mg/dL",
-                style = MaterialTheme.typography.bodyMedium
-            )
-            Spacer(Modifier.height(2.dp))
-            val minutesToThreshold = output.result.minutesToThreshold
-            Text(
-                if (minutesToThreshold != null) {
-                    "Projected to cross the threshold in ~${minutesToThreshold.roundToInt()} min"
-                } else {
-                    "No threshold crossing predicted within 30 min"
-                },
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            val projectedValue = output.result.projectedValue
+            if (projectedValue != null) {
+                Text(
+                    "Projected in 30 min: ${projectedValue.roundToInt()} mg/dL",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Spacer(Modifier.height(2.dp))
+                val minutesToThreshold = output.result.minutesToThreshold
+                Text(
+                    if (minutesToThreshold != null) {
+                        "Projected to cross the threshold in ~${minutesToThreshold.roundToInt()} min"
+                    } else {
+                        "No threshold crossing predicted within 30 min"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            output.result.note?.let {
+                if (projectedValue != null) Spacer(Modifier.height(4.dp))
+                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
         }
     }
 

@@ -4,7 +4,6 @@ import com.aadiinfo.nightwatch.domain.model.AlertEvent
 import com.aadiinfo.nightwatch.domain.model.GlucoseReading
 import com.aadiinfo.nightwatch.domain.model.Patient
 import com.aadiinfo.nightwatch.domain.model.Thresholds
-import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.firestore
 import com.google.firebase.functions.FirebaseFunctions
@@ -91,16 +90,17 @@ class PatientRepository(
         return doc.id
     }
 
-    /** Adds a family member as a read-only follower. */
-    suspend fun inviteFollower(patientId: String, followerUid: String, displayName: String) {
-        val patientRef = firestore.collection("patients").document(patientId)
-        val batch = firestore.batch()
-        batch.update(patientRef, "memberUids", FieldValue.arrayUnion(followerUid))
-        batch.set(
-            patientRef.collection("members").document(followerUid),
-            mapOf("role" to "follower", "displayName" to displayName)
-        )
-        batch.commit().await()
+    /** Self-service: the signed-in caller adds themself as a read-only
+     * follower on this patient directly, given only the patientId - see
+     * claimIobSource for the identical trust model, why there's no separate
+     * owner-approval step, and why the patient's displayName is returned. */
+    suspend fun joinPatientAsFollower(patientId: String, displayName: String): String {
+        val result = functions.getHttpsCallable("joinPatientAsFollower")
+            .call(mapOf("patientId" to patientId, "displayName" to displayName))
+            .await()
+        @Suppress("UNCHECKED_CAST")
+        val data = result.data as? Map<String, Any?> ?: emptyMap()
+        return data["displayName"] as? String ?: ""
     }
 
     suspend fun saveThresholds(patientId: String, thresholds: Thresholds) {
@@ -148,12 +148,22 @@ class PatientRepository(
             .await()
     }
 
-    /** Owner-only: designates which signed-in user's device is trusted to
-     * report IOB directly (e.g. a paired phone's Omnipod notification
-     * listener), independent of the members/roles system. */
-    suspend fun setIobSource(patientId: String, sourceUid: String) {
-        functions.getHttpsCallable("setIobSource")
-            .call(mapOf("patientId" to patientId, "sourceUid" to sourceUid))
+    /** Self-service: the signed-in caller becomes the trusted IOB source for
+     * this patient directly - no owner approval step. Knowing the patientId
+     * is already this app's de facto shared-secret boundary (same trust
+     * model as ESP32 device pairing), independent of the members/roles
+     * system entirely.
+     *
+     * Returns the patient's displayName so the caller can show *whose*
+     * record this device just linked to - patientId alone is an opaque
+     * string nobody can visually verify, and entering the wrong one
+     * previously succeeded with no way to notice. */
+    suspend fun claimIobSource(patientId: String): String {
+        val result = functions.getHttpsCallable("claimIobSource")
+            .call(mapOf("patientId" to patientId))
             .await()
+        @Suppress("UNCHECKED_CAST")
+        val data = result.data as? Map<String, Any?> ?: emptyMap()
+        return data["displayName"] as? String ?: ""
     }
 }

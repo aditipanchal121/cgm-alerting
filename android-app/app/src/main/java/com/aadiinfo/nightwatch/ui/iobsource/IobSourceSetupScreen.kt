@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -22,39 +23,48 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import androidx.core.app.NotificationManagerCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import com.aadiinfo.nightwatch.data.repository.PatientRepository
 import com.aadiinfo.nightwatch.notifications.OmnipodIobListenerService
-import com.google.firebase.Firebase
-import com.google.firebase.auth.auth
+import kotlinx.coroutines.launch
 
 /**
- * Lets a device that isn't a family member of any patient (e.g. a brother's
- * phone that only has the pump app, not a NightWatch account tied to this
- * patient) opt in to reporting IOB directly from that pump app's own
- * notification. Reachable from the empty-state chooser in NightWatchApp
- * when the signed-in account has no patients - deliberately doesn't require
- * joining as a family member, since being trusted to report IOB is a
- * narrower, orthogonal permission (see OmnipodIobListenerService and
- * backend/firestore.rules' externalIob rule).
+ * Lets this device opt in to reporting IOB directly from a pump app's own
+ * notification (e.g. a brother's phone that only has the pump app, or an
+ * existing family member's phone that's also near the pump). Doesn't
+ * require this device to be a family member of the patient at all -
+ * deliberately self-service, entering the patient ID and flipping the
+ * toggle is the whole flow, no separate owner-approval step, since the
+ * patient ID is already this app's de facto shared-secret boundary (same
+ * trust model as ESP32 device pairing). Every existing family member of
+ * that patient sees the improved IOB automatically through the app's
+ * normal Dashboard/notification/widget flow once this device starts
+ * reporting - they don't need to do anything on their end.
+ *
+ * Reachable from VigilApp regardless of account state - a persistent
+ * toolbar icon once a patient exists, or a link on the empty-state screen
+ * before one does - rather than being nested inside just one of those
+ * states, which previously hid it for any account that already had a
+ * patient tied to it.
  */
 @Composable
-fun IobSourceSetupScreen(onBack: () -> Unit) {
+fun IobSourceSetupScreen(patientRepository: PatientRepository, onBack: () -> Unit) {
     val context = LocalContext.current
-    val clipboardManager = LocalClipboardManager.current
-    val uid = Firebase.auth.currentUser?.uid ?: ""
+    val scope = rememberCoroutineScope()
 
     var patientId by remember { mutableStateOf(OmnipodIobListenerService.getPatientId(context) ?: "") }
     var enabled by remember { mutableStateOf(OmnipodIobListenerService.isEnabled(context)) }
+    var claiming by remember { mutableStateOf(false) }
+    var status by remember { mutableStateOf<String?>(null) }
 
     // Notification access is granted externally in system Settings, not via
     // an in-app permission dialog - re-check it on resume so this reflects
@@ -84,49 +94,27 @@ fun IobSourceSetupScreen(onBack: () -> Unit) {
         Spacer(Modifier.height(8.dp))
         Text(
             "Use this device to report IOB directly from a pump app's own " +
-                "notification (currently supports Omnipod 5's \"Automated Mode\" " +
-                "notification) instead of relying on Gluroo's IOB feed. This " +
-                "device doesn't need to be a family member of the patient - the " +
-                "patient's owner just needs to authorize this account's ID below " +
-                "as the trusted IOB source, from their own Settings tab.",
+                "notification (currently supports Omnipod 5's \"Automated Mode\" / " +
+                "\"Manual Mode\" notification) instead of relying on Gluroo's IOB " +
+                "feed. Ask any family member for the patient ID below - everyone " +
+                "already following that patient will automatically see the " +
+                "improved IOB once this device starts reporting, with nothing to " +
+                "set up on their end.",
             style = MaterialTheme.typography.bodyMedium
         )
 
         Spacer(Modifier.height(24.dp))
-        Text("Your account ID", style = MaterialTheme.typography.titleSmall)
-        Spacer(Modifier.height(4.dp))
-        Text(
-            "Send this to the patient's owner so they can authorize this device.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Spacer(Modifier.height(8.dp))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                uid.ifBlank { "Sign in first" },
-                style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.weight(1f)
-            )
-            OutlinedButton(
-                onClick = { clipboardManager.setText(AnnotatedString(uid)) },
-                enabled = uid.isNotBlank()
-            ) {
-                Text("Copy")
-            }
-        }
-
-        Spacer(Modifier.height(24.dp))
         Text("Patient ID", style = MaterialTheme.typography.titleSmall)
-        Spacer(Modifier.height(4.dp))
         Text(
-            "Ask the owner for this - it's shown in their app's Settings tab.",
+            "This identifies the record for whoever's glucose is being tracked " +
+                "(not you personally) - copy it from that record's own Settings tab.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         Spacer(Modifier.height(8.dp))
         OutlinedTextField(
             value = patientId,
-            onValueChange = { patientId = it },
+            onValueChange = { patientId = it; status = null },
             label = { Text("Patient ID") },
             modifier = Modifier.fillMaxWidth()
         )
@@ -141,14 +129,44 @@ fun IobSourceSetupScreen(onBack: () -> Unit) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            Switch(
-                checked = enabled,
-                onCheckedChange = { checked ->
-                    enabled = checked
-                    OmnipodIobListenerService.configure(context, patientId.ifBlank { null }, checked)
-                },
-                enabled = patientId.isNotBlank()
-            )
+            if (claiming) {
+                CircularProgressIndicator(modifier = Modifier.height(24.dp))
+            } else {
+                Switch(
+                    checked = enabled,
+                    onCheckedChange = { checked ->
+                        if (checked) {
+                            claiming = true
+                            scope.launch {
+                                runCatching { patientRepository.claimIobSource(patientId) }
+                                    .onSuccess { patientDisplayName ->
+                                        enabled = true
+                                        OmnipodIobListenerService.configure(context, patientId, true)
+                                        status = if (patientDisplayName.isNotBlank()) {
+                                            "This device is now the IOB source for $patientDisplayName - " +
+                                                "double check that's the right person."
+                                        } else {
+                                            "This device is now the IOB source for that patient."
+                                        }
+                                    }
+                                    .onFailure {
+                                        status = it.message ?: "Could not claim IOB source - check the patient ID."
+                                    }
+                                claiming = false
+                            }
+                        } else {
+                            enabled = false
+                            OmnipodIobListenerService.configure(context, patientId, false)
+                            status = null
+                        }
+                    },
+                    enabled = patientId.isNotBlank()
+                )
+            }
+        }
+        status?.let {
+            Spacer(Modifier.height(8.dp))
+            Text(it, style = MaterialTheme.typography.bodySmall)
         }
 
         Spacer(Modifier.height(16.dp))
@@ -166,7 +184,7 @@ fun IobSourceSetupScreen(onBack: () -> Unit) {
         }
         Spacer(Modifier.height(4.dp))
         Text(
-            "Find NightWatch in the list and turn it on - Android only allows " +
+            "Find Vigil in the list and turn it on - Android only allows " +
                 "granting this from system Settings, not from within the app.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant

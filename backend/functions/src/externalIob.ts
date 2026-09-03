@@ -64,5 +64,5 @@ export async function pushExternalIobUpdate(
     iobUnreliable: false,
   };
 
-  await sendReadingStatusPush(patientId, patient.displayName ?? 'NightWatch', reading);
+  await sendReadingStatusPush(patientId, patient.displayName ?? 'Vigil', reading);
 }

@@ -1,4 +1,4 @@
-# NightWatch haptic alarm device (ESP32)
+# Vigil haptic alarm device (ESP32)
 
 A dedicated, purpose-built bedside alarm for CGM alerts - built ahead of
 the Wear OS extension per the project's priorities. Polls the Firebase
@@ -41,7 +41,7 @@ channel and vice versa.
 3. Install [PlatformIO](https://platformio.org/), then from this directory:
    `pio run --target upload` (with the board connected over USB).
 4. On first boot the device opens a WiFi setup portal named
-   `NightWatch-Setup-esp32-XXXXXXXXXXXX` - connect to it from a phone and
+   `Vigil-Setup-esp32-XXXXXXXXXXXX` - connect to it from a phone and
    enter your home WiFi credentials.
 5. Open the serial monitor (`pio device monitor`, 115200 baud) to read the
    device's ID, then enter it in the Android app's "Alarm device" pairing

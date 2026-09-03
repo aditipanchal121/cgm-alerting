@@ -27,7 +27,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import com.aadiinfo.nightwatch.ui.theme.NightWatchTheme
+import com.aadiinfo.nightwatch.ui.theme.VigilTheme
 
 /**
  * Full-screen critical alert - the groundwork for "wake the user up"
@@ -53,13 +53,13 @@ class AlarmActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         showOverLockScreen()
 
-        val title = intent.getStringExtra(EXTRA_TITLE) ?: "NightWatch alert"
+        val title = intent.getStringExtra(EXTRA_TITLE) ?: "Vigil alert"
         val message = intent.getStringExtra(EXTRA_MESSAGE) ?: ""
 
         startAlarm()
 
         setContent {
-            NightWatchTheme {
+            VigilTheme {
                 AlarmScreen(
                     title = title,
                     message = message,

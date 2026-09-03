@@ -7,7 +7,25 @@ import kotlin.math.abs
 import kotlin.math.pow
 import kotlin.math.sqrt
 
-data class PredictionResult(val projectedValue: Double, val minutesToThreshold: Double?)
+/** [projectedValue] is nullable so a predictor can decline to project at all
+ * for the current conditions (see [QuadraticPredictor], which only fits a
+ * curve for a steep trend) rather than being forced to always produce some
+ * number. [note] is shown in the UI alongside whatever this call does
+ * produce - typically explaining why there's no projection this cycle. */
+data class PredictionResult(val projectedValue: Double?, val minutesToThreshold: Double?, val note: String? = null)
+
+/** CGMs don't report numeric values outside this range either - Dexcom
+ * displays "LOW" below 40 and "HIGH" above 400 rather than a number - so an
+ * extrapolated projection has no business claiming more precision than the
+ * sensor itself would. Without this, an aggressively-curving fit (the
+ * quadratic model especially, extrapolating a handful of noisy points 30
+ * minutes past the last one) can produce something like -1 mg/dL: correct
+ * polynomial math, but physiologically meaningless and dangerous to show
+ * next to a real reading. */
+private const val MIN_DISPLAYABLE_MGDL = 40.0
+private const val MAX_DISPLAYABLE_MGDL = 400.0
+
+private fun clampToDisplayable(value: Double): Double = value.coerceIn(MIN_DISPLAYABLE_MGDL, MAX_DISPLAYABLE_MGDL)
 
 /**
  * Extension point for glucose prediction. The authoritative predictor runs
@@ -67,7 +85,7 @@ private fun linearProjection(
     }
 
     val ratePerMinute = (last.sgv - first.sgv) / minutesElapsed
-    val projected = last.sgv + ratePerMinute * horizonMinutes
+    val projected = clampToDisplayable(last.sgv + ratePerMinute * horizonMinutes)
     if (ratePerMinute == 0.0) {
         return PredictionResult(projected, null)
     }
@@ -143,7 +161,7 @@ class IobAwarePredictor : GlucosePredictor {
             observedRatePerMinute
         }
 
-        val projected = last.sgv + effectiveRatePerMinute * horizonMinutes
+        val projected = clampToDisplayable(last.sgv + effectiveRatePerMinute * horizonMinutes)
         if (effectiveRatePerMinute == 0.0) {
             return PredictionResult(projected, null)
         }
@@ -233,15 +251,36 @@ private fun windowedReadings(sorted: List<GlucoseReading>, windowMinutes: Int?):
     return if (windowed.size >= 2) windowed else sorted
 }
 
+/** Direction arrows steep enough for a curved fit to mean something -
+ * single/double up or down. Flat, diagonal, and unknown/out-of-range
+ * directions are excluded: with only a handful of noisy CGM points, fitting
+ * a quadratic to a trend that isn't clearly moving is much more likely to
+ * be reading curvature into noise than capturing real acceleration. */
+private val QUADRATIC_ELIGIBLE_DIRECTIONS = setOf(
+    TrendDirection.SINGLE_UP,
+    TrendDirection.SINGLE_DOWN,
+    TrendDirection.DOUBLE_UP,
+    TrendDirection.DOUBLE_DOWN
+)
+
+private const val QUADRATIC_INELIGIBLE_NOTE =
+    "No quadratic projection for this trend - this model only fits a curve " +
+        "for a single or double up/down arrow, where there's a clear enough " +
+        "move for curvature to mean something rather than just amplifying " +
+        "noise on a flat or diagonal trend."
+
 /**
- * Quadratic (2nd-order polynomial) least-squares fit, applied unconditionally
- * regardless of trend arrow - kept as a separate, clearly-experimental point
- * of comparison after [DirectionAwarePredictor] moved away from curve-fitting
- * in favor of a windowed linear model (see that class's doc comment for why).
- * A quadratic can capture acceleration/deceleration a straight line can't,
- * but is more sensitive to noise, especially with only 3-4 points - shown
- * here specifically so that sensitivity is visible on the comparison chart,
- * not because it's assumed to be more accurate than the other models.
+ * Quadratic (2nd-order polynomial) least-squares fit, restricted to steep
+ * trend arrows (see [QUADRATIC_ELIGIBLE_DIRECTIONS]) - kept as a separate,
+ * clearly-experimental point of comparison after [DirectionAwarePredictor]
+ * moved away from curve-fitting in favor of a windowed linear model (see
+ * that class's doc comment for why). A quadratic can capture
+ * acceleration/deceleration a straight line can't, but is more sensitive to
+ * noise, especially with only 3-4 points - shown here specifically so that
+ * sensitivity is visible on the comparison chart, not because it's assumed
+ * to be more accurate than the other models. Restricting it to steep arrows
+ * doesn't fix that sensitivity; it just avoids applying curve-fitting where
+ * there isn't even a clear trend for a curve to plausibly describe.
  *
  * The fit is recency-weighted (see [recencyWeight]) rather than treating
  * every point in the window equally.
@@ -250,11 +289,11 @@ class QuadraticPredictor : GlucosePredictor {
     override val name = "Quadratic (experimental)"
     override val description =
         "Fits a curved (quadratic) line instead of a straight one, weighting " +
-            "your most recent readings more heavily than older ones. Kept as " +
-            "an experimental comparison point rather than a recommended " +
-            "model - it can capture acceleration or deceleration a straight " +
-            "line can't, but with only a handful of CGM readings it's also " +
-            "more prone to reading curvature into what's really just noise."
+            "your most recent readings more heavily than older ones. Only " +
+            "runs for a single or double up/down arrow - kept as an " +
+            "experimental comparison point rather than a recommended model, " +
+            "since with only a handful of CGM readings it's prone to reading " +
+            "curvature into what's really just noise."
 
     override fun predict(
         readings: List<GlucoseReading>,
@@ -262,6 +301,10 @@ class QuadraticPredictor : GlucosePredictor {
         horizonMinutes: Int
     ): PredictionResult {
         val sorted = readings.sortedBy { it.dateMs }
+        val direction = TrendDirection.fromNightscout(sorted.last().direction)
+        if (direction !in QUADRATIC_ELIGIBLE_DIRECTIONS) {
+            return PredictionResult(projectedValue = null, minutesToThreshold = null, note = QUADRATIC_INELIGIBLE_NOTE)
+        }
         if (sorted.size < 3) {
             return linearProjection(sorted, thresholds.lowMgdl, horizonMinutes)
         }
@@ -343,7 +386,7 @@ private fun quadraticProjection(
     val a = detA / det
 
     val xHorizon = xLast + horizonMinutes
-    val projected = a * xHorizon * xHorizon + b * xHorizon + c
+    val projected = clampToDisplayable(a * xHorizon * xHorizon + b * xHorizon + c)
     val minutesToThreshold = solveQuadraticCrossing(a, b, c, thresholdMgdl.toDouble(), xLast, horizonMinutes)
     return PredictionResult(projected, minutesToThreshold)
 }

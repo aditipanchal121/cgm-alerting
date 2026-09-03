@@ -1,6 +1,7 @@
 package com.aadiinfo.nightwatch.ui.dashboard
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
@@ -31,6 +32,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -46,6 +48,7 @@ import java.util.Locale
 import java.util.concurrent.TimeUnit
 import kotlin.math.abs
 import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.roundToInt
 
 @Composable
@@ -61,7 +64,7 @@ fun DashboardScreen(patientRepository: PatientRepository, patientId: String) {
             .padding(24.dp)
     ) {
         Text(
-            state.patient?.displayName ?: "NightWatch",
+            state.patient?.displayName ?: "Vigil",
             style = MaterialTheme.typography.headlineSmall
         )
         Spacer(Modifier.height(24.dp))
@@ -100,17 +103,42 @@ private fun GlucoseTrendChart(readings: List<GlucoseReading>, thresholds: Thresh
     val lineColor = MaterialTheme.colorScheme.primary
     val gridColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f)
     val selectionColor = MaterialTheme.colorScheme.onSurface
-    val pointColors = readings.map { glucoseColor(it.sgv, thresholds) }
 
-    val minValue = 40f
-    val maxValue = max(300f, (readings.maxOf { it.sgv } + 20).toFloat())
     val oldestMs = readings.first().dateMs
     val newestMs = readings.last().dateMs
-    val spanMs = (newestMs - oldestMs).coerceAtLeast(1L).toFloat()
+    val fullSpanMs = (newestMs - oldestMs).coerceAtLeast(1L).toFloat()
     val timeFormat = remember { SimpleDateFormat("h:mm a", Locale.getDefault()) }
 
+    // Pinch-to-zoom window, kept independent of `readings`' identity so a
+    // poll cycle refreshing the data doesn't snap an inspected zoom back to
+    // the full range. Stored as an offset+span relative to oldestMs, not
+    // absolute epoch millis - epoch millis (~1.7e12) would lose several
+    // seconds of precision once promoted to Float during the pinch math
+    // below, where these deltas (at most a day, ~8.6e7) stay accurate to a
+    // few milliseconds.
+    var windowStartOffsetMs by remember { mutableStateOf(0f) }
+    var windowSpanMs by remember { mutableStateOf(fullSpanMs) }
+    val minSpanMs = 10 * 60 * 1000f
+
+    val effectiveSpan = windowSpanMs.coerceIn(minSpanMs, fullSpanMs)
+    val effectiveStartOffset = windowStartOffsetMs.coerceIn(0f, (fullSpanMs - effectiveSpan).coerceAtLeast(0f))
+    val windowStartMs = oldestMs + effectiveStartOffset.toLong()
+    val windowEndMs = windowStartMs + effectiveSpan.toLong()
+    val isZoomed = effectiveSpan < fullSpanMs - 1f
+
+    // Filtering only kicks in once zoomed - left as the untouched full list
+    // otherwise, so the default view can never drop a reading to float
+    // rounding at the window edges.
+    val visibleReadings = if (isZoomed) readings.filter { it.dateMs in windowStartMs..windowEndMs } else readings
+    val minValue = if (isZoomed && visibleReadings.isNotEmpty()) {
+        min(40f, (visibleReadings.minOf { it.sgv } - 20).toFloat())
+    } else {
+        40f
+    }
+    val maxValue = max(300f, ((visibleReadings.maxOfOrNull { it.sgv } ?: 300) + 20).toFloat())
+
     fun nearestIndexFor(x: Float, width: Float): Int {
-        val targetMs = oldestMs + (x / width).coerceIn(0f, 1f) * spanMs
+        val targetMs = windowStartMs + (x / width).coerceIn(0f, 1f) * effectiveSpan
         return readings.indices.minByOrNull { abs(readings[it].dateMs - targetMs) } ?: 0
     }
 
@@ -134,58 +162,92 @@ private fun GlucoseTrendChart(readings: List<GlucoseReading>, thresholds: Thresh
                         .height(160.dp)
                         .pointerInput(readings) {
                             awaitEachGesture {
-                                val down = awaitFirstDown()
-                                selectedIndex = nearestIndexFor(down.position.x, size.width.toFloat())
+                                awaitFirstDown()
+                                // Two fingers pinch/pan to zoom; a lone finger inspects
+                                // a reading (unchanged from before). Tracked per-gesture
+                                // so switching finger count mid-gesture re-anchors cleanly.
+                                var lastSpanPx: Float? = null
+                                var lastCenterPx: Float? = null
                                 while (true) {
                                     val event = awaitPointerEvent()
-                                    val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                                    if (!change.pressed) break
-                                    change.consume()
-                                    selectedIndex = nearestIndexFor(change.position.x, size.width.toFloat())
+                                    val pressed = event.changes.filter { it.pressed }
+                                    if (pressed.isEmpty()) break
+
+                                    if (pressed.size >= 2) {
+                                        selectedIndex = null
+                                        val width = size.width.toFloat()
+                                        val p1 = pressed[0].position.x
+                                        val p2 = pressed[1].position.x
+                                        val spanPx = abs(p1 - p2).coerceAtLeast(1f)
+                                        val centerPx = (p1 + p2) / 2f
+
+                                        if (lastSpanPx != null && lastCenterPx != null && width > 0f) {
+                                            val scale = lastSpanPx!! / spanPx
+                                            val anchorMs = windowStartOffsetMs + (centerPx / width) * windowSpanMs
+                                            val newSpan = (windowSpanMs * scale).coerceIn(minSpanMs, fullSpanMs)
+                                            var newStart = anchorMs - (centerPx / width) * newSpan
+                                            newStart -= ((centerPx - lastCenterPx!!) / width) * newSpan
+                                            windowSpanMs = newSpan
+                                            windowStartOffsetMs = newStart.coerceIn(0f, (fullSpanMs - newSpan).coerceAtLeast(0f))
+                                        }
+                                        lastSpanPx = spanPx
+                                        lastCenterPx = centerPx
+                                        pressed.forEach { it.consume() }
+                                    } else {
+                                        lastSpanPx = null
+                                        lastCenterPx = null
+                                        val change = pressed[0]
+                                        selectedIndex = nearestIndexFor(change.position.x, size.width.toFloat())
+                                        change.consume()
+                                    }
                                 }
                                 selectedIndex = null
                             }
                         }
                 ) {
-                    fun xFor(dateMs: Long) = (dateMs - oldestMs) / spanMs * size.width
+                    fun xFor(dateMs: Long) = (dateMs - windowStartMs) / effectiveSpan * size.width
                     fun yFor(sgv: Int) =
                         size.height - ((sgv - minValue) / (maxValue - minValue)).coerceIn(0f, 1f) * size.height
 
-                    listOf(thresholds.lowMgdl, thresholds.highMgdl).forEach { threshold ->
-                        val y = yFor(threshold)
-                        drawLine(gridColor, Offset(0f, y), Offset(size.width, y), strokeWidth = 1.dp.toPx())
-                    }
+                    clipRect {
+                        listOf(thresholds.lowMgdl, thresholds.highMgdl).forEach { threshold ->
+                            val y = yFor(threshold)
+                            drawLine(gridColor, Offset(0f, y), Offset(size.width, y), strokeWidth = 1.dp.toPx())
+                        }
 
-                    val path = Path()
-                    readings.forEachIndexed { index, reading ->
-                        val point = Offset(xFor(reading.dateMs), yFor(reading.sgv))
-                        if (index == 0) path.moveTo(point.x, point.y) else path.lineTo(point.x, point.y)
-                    }
-                    drawPath(path, color = lineColor, style = Stroke(width = 3.dp.toPx()))
+                        if (visibleReadings.size >= 2) {
+                            val path = Path()
+                            visibleReadings.forEachIndexed { index, reading ->
+                                val point = Offset(xFor(reading.dateMs), yFor(reading.sgv))
+                                if (index == 0) path.moveTo(point.x, point.y) else path.lineTo(point.x, point.y)
+                            }
+                            drawPath(path, color = lineColor, style = Stroke(width = 3.dp.toPx()))
+                        }
 
-                    readings.forEachIndexed { index, reading ->
-                        drawCircle(
-                            color = pointColors[index],
-                            radius = 3.dp.toPx(),
-                            center = Offset(xFor(reading.dateMs), yFor(reading.sgv))
-                        )
-                    }
+                        visibleReadings.forEach { reading ->
+                            drawCircle(
+                                color = glucoseColor(reading.sgv, thresholds),
+                                radius = 3.dp.toPx(),
+                                center = Offset(xFor(reading.dateMs), yFor(reading.sgv))
+                            )
+                        }
 
-                    selectedIndex?.let { index ->
-                        val reading = readings[index]
-                        val x = xFor(reading.dateMs)
-                        drawLine(
-                            selectionColor,
-                            Offset(x, 0f),
-                            Offset(x, size.height),
-                            strokeWidth = 1.dp.toPx()
-                        )
-                        drawCircle(
-                            selectionColor,
-                            radius = 6.dp.toPx(),
-                            center = Offset(x, yFor(reading.sgv)),
-                            style = Stroke(width = 2.dp.toPx())
-                        )
+                        selectedIndex?.let { index ->
+                            val reading = readings[index]
+                            val x = xFor(reading.dateMs)
+                            drawLine(
+                                selectionColor,
+                                Offset(x, 0f),
+                                Offset(x, size.height),
+                                strokeWidth = 1.dp.toPx()
+                            )
+                            drawCircle(
+                                selectionColor,
+                                radius = 6.dp.toPx(),
+                                center = Offset(x, yFor(reading.sgv)),
+                                style = Stroke(width = 2.dp.toPx())
+                            )
+                        }
                     }
                 }
 
@@ -214,17 +276,34 @@ private fun GlucoseTrendChart(readings: List<GlucoseReading>, thresholds: Thresh
                 .padding(start = 40.dp),
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Text(timeFormat.format(Date(oldestMs)), style = MaterialTheme.typography.labelSmall)
-            Text(timeFormat.format(Date((oldestMs + newestMs) / 2)), style = MaterialTheme.typography.labelSmall)
-            Text(timeFormat.format(Date(newestMs)), style = MaterialTheme.typography.labelSmall)
+            Text(timeFormat.format(Date(windowStartMs)), style = MaterialTheme.typography.labelSmall)
+            Text(timeFormat.format(Date((windowStartMs + windowEndMs) / 2)), style = MaterialTheme.typography.labelSmall)
+            Text(timeFormat.format(Date(windowEndMs)), style = MaterialTheme.typography.labelSmall)
         }
 
         Spacer(Modifier.height(4.dp))
-        Text(
-            "Tap and drag to see a specific reading.",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                "Drag to inspect a reading. Pinch with two fingers to zoom.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            if (isZoomed) {
+                Text(
+                    "Reset zoom",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.clickable {
+                        windowStartOffsetMs = 0f
+                        windowSpanMs = fullSpanMs
+                    }
+                )
+            }
+        }
     }
 }
 

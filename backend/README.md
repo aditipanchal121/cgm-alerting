@@ -1,4 +1,4 @@
-# NightWatch backend (Firebase)
+# Vigil backend (Firebase)
 
 The always-on reliability core. Polls Gluroo on a fixed schedule
 independent of any phone, evaluates alerts, and fans out to Firestore

@@ -38,7 +38,7 @@ fun LoginScreen(authRepository: AuthRepository, onSignedIn: () -> Unit) {
         modifier = Modifier.fillMaxSize().padding(24.dp),
         verticalArrangement = Arrangement.Center
     ) {
-        Text("NightWatch", style = MaterialTheme.typography.headlineMedium)
+        Text("Vigil", style = MaterialTheme.typography.headlineMedium)
         Text(
             "Nighttime glucose monitoring for you and your family",
             style = MaterialTheme.typography.bodyMedium

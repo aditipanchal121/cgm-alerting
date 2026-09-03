@@ -1,6 +1,6 @@
 package com.aadiinfo.nightwatch.notifications
 
-import com.aadiinfo.nightwatch.NightWatchApplication
+import com.aadiinfo.nightwatch.VigilApplication
 import com.aadiinfo.nightwatch.domain.model.Severity
 import com.aadiinfo.nightwatch.domain.model.TrendDirection
 import com.google.firebase.auth.auth
@@ -16,12 +16,12 @@ import kotlinx.coroutines.launch
  * as high-priority data messages specifically so this fires (and can raise
  * AlarmActivity) even if the app was killed or the phone was locked.
  */
-class NightWatchFcmService : FirebaseMessagingService() {
+class VigilFcmService : FirebaseMessagingService() {
 
     override fun onNewToken(token: String) {
         super.onNewToken(token)
         val uid = Firebase.auth.currentUser?.uid ?: return
-        val container = (application as NightWatchApplication).container
+        val container = (application as VigilApplication).container
         CoroutineScope(Dispatchers.IO).launch {
             runCatching { container.fcmTokenRepository.registerToken(uid, token) }
         }
@@ -49,7 +49,7 @@ class NightWatchFcmService : FirebaseMessagingService() {
      * ongoing notification instead of interrupting like low/high alerts do. */
     private fun handleReadingStatus(data: Map<String, String>) {
         val sgv = data["sgv"]?.toIntOrNull() ?: return
-        val displayName = data["displayName"] ?: "NightWatch"
+        val displayName = data["displayName"] ?: "Vigil"
         val arrow = TrendDirection.fromNightscout(data["direction"]).arrow
         val iob = data["iob"]?.toDoubleOrNull()
         val iobUnreliable = data["iobUnreliable"]?.toBoolean() ?: false

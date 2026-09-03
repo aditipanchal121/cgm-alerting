@@ -11,6 +11,7 @@ import android.provider.Settings
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import com.aadiinfo.nightwatch.MainActivity
+import com.aadiinfo.nightwatch.R
 import com.aadiinfo.nightwatch.domain.model.Severity
 
 /**
@@ -93,10 +94,15 @@ object NotificationHelper {
 
     /** Ongoing, silent notification showing the latest actual reading - kept
      * separate from the alert channels above so it never buzzes, and always
-     * reflects the real reading rather than a predicted/alert value. */
+     * reflects the real reading rather than a predicted/alert value. Uses
+     * the Vigil mark rather than a system icon so this one, specifically
+     * non-urgent notification is visually branded; showAlert below
+     * deliberately keeps the plain system alert icon so WARNING/CRITICAL
+     * pushes still read as distinct, urgent alerts rather than blending in
+     * with routine status updates. */
     fun updateReadingStatus(context: Context, title: String, text: String) {
         val builder = NotificationCompat.Builder(context, CHANNEL_STATUS)
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(title)
             .setContentText(text)
             .setOngoing(true)

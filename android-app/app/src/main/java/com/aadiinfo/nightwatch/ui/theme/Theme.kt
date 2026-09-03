@@ -10,7 +10,7 @@ private val LightColors = lightColorScheme()
 private val DarkColors = darkColorScheme()
 
 @Composable
-fun NightWatchTheme(content: @Composable () -> Unit) {
+fun VigilTheme(content: @Composable () -> Unit) {
     val colorScheme = if (isSystemInDarkTheme()) DarkColors else LightColors
     MaterialTheme(colorScheme = colorScheme, content = content)
 }

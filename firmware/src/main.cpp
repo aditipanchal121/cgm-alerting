@@ -1,5 +1,5 @@
 /**
- * NightWatch haptic alarm device (ESP32).
+ * Vigil haptic alarm device (ESP32).
  *
  * Polls the Firebase Realtime Database node this device is paired to
  * (/devices/{deviceId}/alert, written by the backend's pollGlucose
@@ -70,8 +70,8 @@ void computeDeviceId() {
 void connectWiFi() {
   WiFiManager wifiManager;
   // Portal SSID includes the device ID so it's identifiable if multiple
-  // NightWatch devices are being set up on the same network.
-  String portalName = "NightWatch-Setup-" + deviceId;
+  // Vigil devices are being set up on the same network.
+  String portalName = "Vigil-Setup-" + deviceId;
   if (!wifiManager.autoConnect(portalName.c_str())) {
     Serial.println("WiFi setup timed out, restarting...");
     ESP.restart();
@@ -250,7 +250,7 @@ void setup() {
 
   computeDeviceId();
   Serial.println("=========================================");
-  Serial.println("NightWatch haptic alarm device");
+  Serial.println("Vigil haptic alarm device");
   Serial.println("Device ID (enter this in the app's Pair Device screen):");
   Serial.println(deviceId);
   Serial.println("=========================================");

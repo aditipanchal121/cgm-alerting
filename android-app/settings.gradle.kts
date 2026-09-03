@@ -13,5 +13,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "NightWatch"
+rootProject.name = "Vigil"
 include(":app")

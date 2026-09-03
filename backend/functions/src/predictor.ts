@@ -29,7 +29,13 @@ export function predictMinutesToThreshold(
   }
 
   const ratePerMinute = (last.sgv - first.sgv) / minutesElapsed;
-  const projectedValue = last.sgv + ratePerMinute * horizonMinutes;
+  // CGMs don't report numbers outside this range either - Dexcom shows "LOW"
+  // below 40 and "HIGH" above 400 rather than a value - so an extrapolated
+  // projection has no business claiming more precision than the sensor
+  // itself would (mirrors the same clamp in the Android app's
+  // GlucosePredictor.kt, added after its quadratic model was seen producing
+  // a -1 mg/dL projection).
+  const projectedValue = Math.min(400, Math.max(40, last.sgv + ratePerMinute * horizonMinutes));
 
   if (ratePerMinute === 0) {
     return { projectedValue, minutesToThreshold: null };
