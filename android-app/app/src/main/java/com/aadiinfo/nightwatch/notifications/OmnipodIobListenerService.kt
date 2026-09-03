@@ -18,9 +18,12 @@ import kotlinx.coroutines.tasks.await
  * Mode" / "Manual Mode" notification, as a more reliable alternative to
  * Gluroo's IOB feed (which has been unreliable - see
  * backend/functions/src/externalIob.ts). Writes to
- * patients/{patientId}/externalIob/current, which firestore.rules only
- * accepts from the UID that most recently self-claimed IOB-source status
- * for that patient via the claimIobSource callable (see
+ * patients/{patientId}/externalIob/current (the live value pollGlucose
+ * reads) and, alongside it, patients/{patientId}/externalIobHistory (an
+ * append-only log of every value, kept so training data isn't limited to
+ * whatever was fresh at each 5-minute poll tick) - both accepted by
+ * firestore.rules only from the UID that most recently self-claimed
+ * IOB-source status for that patient via the claimIobSource callable (see
  * IobSourceSetupScreen) - this service running and this device's local
  * toggle being on does nothing by itself unless that claim matches the
  * signed-in account.
@@ -87,6 +90,16 @@ class OmnipodIobListenerService : NotificationListenerService() {
         }
 
         val nowMs = System.currentTimeMillis()
+        // Rate-limits how often we *attempt* a write at all (success or not)
+        // so a repost storm can't hammer Firestore - updated unconditionally
+        // below, right before every attempt, independent of whether that
+        // attempt succeeds.
+        val lastAttemptAtMs = prefs.getLong(KEY_LAST_ATTEMPT_AT, 0L)
+        if (nowMs - lastAttemptAtMs < MIN_WRITE_INTERVAL_MS) {
+            Log.d(TAG, "Skipping write: attempted too recently (${nowMs - lastAttemptAtMs}ms ago)")
+            return
+        }
+
         // Stored as raw bits via a Long, not a Float - SharedPreferences has
         // no native Double support, and a Float round-trip would lose enough
         // precision to make the dedup check below spuriously see "changed"
@@ -96,17 +109,25 @@ class OmnipodIobListenerService : NotificationListenerService() {
         } else {
             null
         }
+        // Only set on a *successful* write, unlike lastAttemptAtMs above - a
+        // rejected/failed write must not be mistaken for the value already
+        // being current server-side, or a persistently-failing write (e.g.
+        // stale claim) would get stuck skipping retries as "unchanged" for
+        // up to a full heartbeat interval instead of retrying as soon as the
+        // rate limit allows.
         val lastWrittenAtMs = prefs.getLong(KEY_LAST_WRITTEN_AT, 0L)
 
-        // Dedupe + throttle: Omnipod may repost this notification more often
+        // Dedupe + heartbeat: Omnipod may repost this notification more often
         // than IOB actually changes (e.g. just refreshing a timestamp), and
         // writing on every repost would be wasteful. But an unchanged value
         // still needs a periodic "heartbeat" write so its reportedAt doesn't
         // go stale past the backend's freshness window and get ignored.
         val valueChanged = lastIob == null || lastIob != iob
         val heartbeatDue = nowMs - lastWrittenAtMs >= HEARTBEAT_MS
-        val minIntervalElapsed = nowMs - lastWrittenAtMs >= MIN_WRITE_INTERVAL_MS
-        if (!minIntervalElapsed || (!valueChanged && !heartbeatDue)) return
+        if (!valueChanged && !heartbeatDue) {
+            Log.d(TAG, "Skipping write: iob=$iob unchanged and heartbeat not due")
+            return
+        }
 
         val uid = Firebase.auth.currentUser?.uid
         if (uid == null) {
@@ -114,20 +135,30 @@ class OmnipodIobListenerService : NotificationListenerService() {
             return
         }
 
-        prefs.edit()
-            .putLong(KEY_LAST_IOB, iob.toRawBits())
-            .putLong(KEY_LAST_WRITTEN_AT, nowMs)
-            .apply()
+        prefs.edit().putLong(KEY_LAST_ATTEMPT_AT, nowMs).apply()
 
         Log.d(TAG, "Writing iob=$iob for patient=$patientId as uid=$uid")
         CoroutineScope(Dispatchers.IO).launch {
             runCatching {
-                Firebase.firestore
-                    .collection("patients").document(patientId)
-                    .collection("externalIob").document("current")
-                    .set(mapOf("iob" to iob, "reportedAt" to nowMs, "reportedBy" to uid))
+                val data = mapOf("iob" to iob, "reportedAt" to nowMs, "reportedBy" to uid)
+                val patientRef = Firebase.firestore.collection("patients").document(patientId)
+                // Written alongside (not instead of) externalIob/current: "current"
+                // is a single doc that's overwritten on every update - fine for the
+                // freshness check in getFreshExternalIob, but it means every
+                // intermediate IOB value between poll cycles would otherwise be
+                // lost. This append-only log preserves them so training data isn't
+                // limited to whatever value happened to be fresh at each 5-minute
+                // pollGlucose tick.
+                Firebase.firestore.batch()
+                    .set(patientRef.collection("externalIob").document("current"), data)
+                    .set(patientRef.collection("externalIobHistory").document(), data)
+                    .commit()
                     .await()
             }.onSuccess {
+                prefs.edit()
+                    .putLong(KEY_LAST_IOB, iob.toRawBits())
+                    .putLong(KEY_LAST_WRITTEN_AT, nowMs)
+                    .apply()
                 Log.d(TAG, "Write succeeded")
             }.onFailure {
                 Log.e(TAG, "Write failed", it)
@@ -142,6 +173,7 @@ class OmnipodIobListenerService : NotificationListenerService() {
         private const val KEY_PATIENT_ID = "patient_id"
         private const val KEY_LAST_IOB = "last_iob"
         private const val KEY_LAST_WRITTEN_AT = "last_written_at"
+        private const val KEY_LAST_ATTEMPT_AT = "last_attempt_at"
 
         private const val MIN_WRITE_INTERVAL_MS = 30_000L
         private const val HEARTBEAT_MS = 4 * 60 * 1000L

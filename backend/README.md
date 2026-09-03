@@ -43,6 +43,19 @@ See `firestore.rules` for the authoritative access model:
 - `patients/{patientId}/alerts` - alert event log, written only by `pollGlucose`.
   A separate `cleanupOldAlerts` scheduled function deletes alerts older than
   3 days once a day, so this doesn't grow without bound.
+- `patients/{patientId}/externalIob/current` - latest directly-reported IOB
+  (e.g. Omnipod's own notification, read by a paired phone's
+  NotificationListenerService - see `OmnipodIobListenerService.kt`),
+  overwritten on every report. `pollGlucose` prefers this over Gluroo's own
+  IOB whenever it's fresher than `EXTERNAL_IOB_FRESHNESS_MS`, and it's what
+  gets baked into that poll's `readings` doc.
+- `patients/{patientId}/externalIobHistory` - append-only log of every
+  directly-reported IOB value (not just the latest), written alongside
+  `externalIob/current` for the same reason `readings` is kept a full
+  year: training data. To build a fully-aligned training set, join on
+  nearest timestamp - e.g. per `readings.dateMs`, take the last
+  `externalIobHistory.reportedAt <= dateMs` - rather than relying only on
+  whatever `readings.iob` already captured at that poll tick.
 - `devices/{deviceId}` - ESP32 pairing: `{ patientId, pairedAt, pairedBy }`.
 - Realtime Database `devices/{deviceId}/alert` - what the ESP32 firmware streams.
 

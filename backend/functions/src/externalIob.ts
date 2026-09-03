@@ -46,7 +46,10 @@ export async function pushExternalIobUpdate(
 ): Promise<void> {
   const patientDoc = await db.collection('patients').doc(patientId).get();
   const patient = patientDoc.data();
-  if (!patient) return;
+  if (!patient) {
+    console.warn(`pushExternalIobUpdate(${patientId}): no such patient`);
+    return;
+  }
 
   const latestReadingSnap = await db
     .collection('patients')
@@ -56,7 +59,10 @@ export async function pushExternalIobUpdate(
     .limit(1)
     .get();
   const latestReading = latestReadingSnap.docs[0]?.data() as GlucoseReading | undefined;
-  if (!latestReading) return;
+  if (!latestReading) {
+    console.warn(`pushExternalIobUpdate(${patientId}): no readings yet, nothing to recombine with`);
+    return;
+  }
 
   const reading: GlucoseReading = {
     ...latestReading,

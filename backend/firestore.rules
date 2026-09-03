@@ -62,6 +62,18 @@ service cloud.firestore {
           get(/databases/$(database)/documents/patients/$(patientId)).data.iobSourceUid == request.auth.uid;
       }
 
+      // Append-only log of every externalIob value (not just the latest),
+      // for building timestamp-aligned training data from patients/{id}/readings
+      // and this history together - see OmnipodIobListenerService. Same UID
+      // gate as externalIob above, but create-only: nothing should ever edit
+      // or remove a past entry.
+      match /externalIobHistory/{doc} {
+        allow read: if isMember(patientId);
+        allow create: if isSignedIn() &&
+          get(/databases/$(database)/documents/patients/$(patientId)).data.iobSourceUid == request.auth.uid;
+        allow update, delete: if false;
+      }
+
       // Family membership: the patient's creator bootstraps themselves as
       // owner; only the owner can add/remove/re-role members after that.
       match /members/{uid} {

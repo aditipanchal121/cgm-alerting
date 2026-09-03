@@ -5,14 +5,31 @@ async function getMemberTokens(patientId: string): Promise<string[]> {
   const db = admin.firestore();
   const membersSnap = await db.collection('patients').doc(patientId).collection('members').get();
   const uids = membersSnap.docs.map((d) => d.id);
-  if (!uids.length) return [];
+  if (!uids.length) {
+    console.warn(`getMemberTokens(${patientId}): no members found`);
+    return [];
+  }
 
   const tokens: string[] = [];
   for (const uid of uids) {
     const tokensSnap = await db.collection('users').doc(uid).collection('fcmTokens').get();
     tokensSnap.forEach((t) => tokens.push(t.id));
   }
+  console.log(`getMemberTokens(${patientId}): ${uids.length} member(s), ${tokens.length} token(s)`);
   return tokens;
+}
+
+/** Logs sendEachForMulticast's per-token result - it never throws on a
+ * rejected token (e.g. one invalidated by a reinstall), so without this a
+ * push can silently fail to reach anyone while the calling function still
+ * reports success. */
+function logMulticastResult(label: string, response: admin.messaging.BatchResponse): void {
+  console.log(`${label}: ${response.successCount} succeeded, ${response.failureCount} failed`);
+  response.responses.forEach((r, i) => {
+    if (!r.success) {
+      console.error(`${label}: token[${i}] failed - ${r.error?.code}: ${r.error?.message}`);
+    }
+  });
 }
 
 /** Pushes an alert to every member (owner + followers) of a patient. */
@@ -48,7 +65,8 @@ export async function sendAlertPush(
 
   // TODO(production hardening): sweep response.responses for
   // messaging/registration-token-not-registered and delete those token docs.
-  await admin.messaging().sendEachForMulticast(message);
+  const response = await admin.messaging().sendEachForMulticast(message);
+  logMulticastResult(`sendAlertPush(${patientId})`, response);
 }
 
 /** Pushes the latest actual reading (not predictive alerts) to every member,
@@ -61,7 +79,10 @@ export async function sendReadingStatusPush(
   reading: GlucoseReading
 ): Promise<void> {
   const tokens = await getMemberTokens(patientId);
-  if (!tokens.length) return;
+  if (!tokens.length) {
+    console.warn(`sendReadingStatusPush(${patientId}): no tokens, nothing sent`);
+    return;
+  }
 
   const message: admin.messaging.MulticastMessage = {
     tokens,
@@ -83,5 +104,6 @@ export async function sendReadingStatusPush(
     },
   };
 
-  await admin.messaging().sendEachForMulticast(message);
+  const response = await admin.messaging().sendEachForMulticast(message);
+  logMulticastResult(`sendReadingStatusPush(${patientId})`, response);
 }
