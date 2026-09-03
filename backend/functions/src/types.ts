@@ -50,5 +50,4 @@ export interface AlertEvent {
   value: number | null;
   message: string;
   timestamp: number;
-  acknowledged: boolean;
 }

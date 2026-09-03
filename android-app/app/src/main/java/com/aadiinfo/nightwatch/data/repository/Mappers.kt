@@ -66,6 +66,5 @@ fun DocumentSnapshot.toAlertEvent(): AlertEvent = AlertEvent(
     severity = runCatching { Severity.valueOf(getString("severity") ?: "") }.getOrDefault(Severity.INFO),
     value = getDouble("value"),
     message = getString("message") ?: "",
-    timestamp = getLong("timestamp") ?: 0L,
-    acknowledged = getBoolean("acknowledged") ?: false
+    timestamp = getLong("timestamp") ?: 0L
 )

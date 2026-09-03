@@ -1,8 +1,6 @@
 package com.aadiinfo.nightwatch.ui.history
 
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -11,11 +9,10 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.ui.Alignment
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
@@ -25,8 +22,16 @@ import com.aadiinfo.nightwatch.domain.model.AlertEvent
 import com.aadiinfo.nightwatch.domain.model.Severity
 import com.aadiinfo.nightwatch.ui.vmFactory
 import java.text.DateFormat
+import java.text.SimpleDateFormat
 import java.util.Date
+import java.util.Locale
 
+/** Read-only alert log - no acknowledge step, since nothing in the app ever
+ * did anything differently based on it being toggled, and it's implicitly
+ * bounded to the last 3 days by cleanupOldAlerts (see backend/README.md),
+ * so it doubles as a running log rather than something that needs to be
+ * triaged/cleared. Grouped by day since 3 days' worth in one flat list
+ * makes it hard to tell where one day ends and the next begins. */
 @Composable
 fun HistoryScreen(patientRepository: PatientRepository, patientId: String) {
     val viewModel: HistoryViewModel =
@@ -41,36 +46,43 @@ fun HistoryScreen(patientRepository: PatientRepository, patientId: String) {
         return
     }
 
+    // Grouping key is a plain locale-stable date string (not the display
+    // format below) so two alerts on the same calendar day always group
+    // together regardless of locale.
+    val dayKeyFormat = remember { SimpleDateFormat("yyyy-MM-dd", Locale.US) }
+    val dayLabelFormat = remember { DateFormat.getDateInstance(DateFormat.FULL) }
+    val timeFormat = remember { DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT) }
+    val groupedAlerts = remember(alerts) {
+        alerts.groupBy { dayKeyFormat.format(Date(it.timestamp)) }
+    }
+
     LazyColumn(modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
-        items(alerts, key = { it.id }) { alert ->
-            AlertRow(alert, onAcknowledge = { viewModel.acknowledge(alert.id) })
-            HorizontalDivider()
+        groupedAlerts.forEach { (dayKey, dayAlerts) ->
+            item(key = dayKey) {
+                Text(
+                    dayLabelFormat.format(Date(dayAlerts.first().timestamp)),
+                    style = MaterialTheme.typography.labelLarge,
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)
+                )
+            }
+            items(dayAlerts, key = { it.id }) { alert ->
+                AlertRow(alert, timeFormat)
+                HorizontalDivider()
+            }
         }
     }
 }
 
 @Composable
-private fun AlertRow(alert: AlertEvent, onAcknowledge: () -> Unit) {
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                alert.type.name.replace('_', ' '),
-                color = severityColor(alert.severity),
-                style = MaterialTheme.typography.titleSmall
-            )
-            Text(alert.message, style = MaterialTheme.typography.bodyMedium)
-            Text(
-                DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(alert.timestamp)),
-                style = MaterialTheme.typography.bodySmall
-            )
-        }
-        if (!alert.acknowledged) {
-            TextButton(onClick = onAcknowledge) { Text("Ack") }
-        }
+private fun AlertRow(alert: AlertEvent, timeFormat: DateFormat) {
+    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp)) {
+        Text(
+            alert.type.name.replace('_', ' '),
+            color = severityColor(alert.severity),
+            style = MaterialTheme.typography.titleSmall
+        )
+        Text(alert.message, style = MaterialTheme.typography.bodyMedium)
+        Text(timeFormat.format(Date(alert.timestamp)), style = MaterialTheme.typography.bodySmall)
     }
 }
 

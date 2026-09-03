@@ -57,11 +57,13 @@ class PatientRepository(
             .snapshotFlow()
             .map { snapshot -> snapshot.documents.mapNotNull { it.toGlucoseReading() } }
 
-    fun observeAlertHistory(patientId: String, limit: Long = 50): Flow<List<AlertEvent>> =
+    // No count limit - cleanupOldAlerts (backend/README.md) already prunes
+    // anything older than 3 days server-side, so the collection itself is
+    // the bound.
+    fun observeAlertHistory(patientId: String): Flow<List<AlertEvent>> =
         firestore.collection("patients").document(patientId)
             .collection("alerts")
             .orderBy("timestamp", com.google.firebase.firestore.Query.Direction.DESCENDING)
-            .limit(limit)
             .snapshotFlow()
             .map { snapshot -> snapshot.documents.map { it.toAlertEvent() } }
 
@@ -107,18 +109,6 @@ class PatientRepository(
         firestore.collection("patients").document(patientId)
             .collection("thresholds").document("current")
             .set(thresholds.toMap())
-            .await()
-    }
-
-    suspend fun acknowledgeAlert(patientId: String, alertId: String) {
-        firestore.collection("patients").document(patientId)
-            .collection("alerts").document(alertId)
-            .update(
-                mapOf(
-                    "acknowledged" to true,
-                    "acknowledgedAt" to System.currentTimeMillis()
-                )
-            )
             .await()
     }
 

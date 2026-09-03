@@ -3,6 +3,7 @@ plugins {
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
     id("com.google.gms.google-services")
+    id("com.google.firebase.crashlytics")
 }
 
 android {
@@ -71,6 +72,10 @@ dependencies {
     implementation("com.google.firebase:firebase-messaging")
     implementation("com.google.firebase:firebase-functions")
     implementation("com.google.firebase:firebase-analytics")
+    // Crash visibility across all 4 family devices - without this, a crash on
+    // someone's phone is only noticed indirectly (e.g. alerts stop arriving),
+    // with no diagnostic trail for what actually happened.
+    implementation("com.google.firebase:firebase-crashlytics")
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.8.1")
 

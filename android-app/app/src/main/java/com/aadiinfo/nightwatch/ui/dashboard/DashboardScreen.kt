@@ -128,8 +128,24 @@ private fun GlucoseTrendChart(readings: List<GlucoseReading>, thresholds: Thresh
 
     // Filtering only kicks in once zoomed - left as the untouched full list
     // otherwise, so the default view can never drop a reading to float
-    // rounding at the window edges.
-    val visibleReadings = if (isZoomed) readings.filter { it.dateMs in windowStartMs..windowEndMs } else readings
+    // rounding at the window edges. Includes one reading just outside each
+    // edge of the window (if one exists), so the segment connecting into/
+    // out of the window is computed correctly and simply clipped at the
+    // canvas edge below - a strict inside-only filter left the nearest
+    // in-window point as a dead end mid-chart whenever the real next
+    // reading sat outside the zoomed range, which is the common case once
+    // the window is narrower than the ~5-minute gap between readings.
+    val visibleReadings = if (isZoomed) {
+        var startIdx = readings.indexOfFirst { it.dateMs >= windowStartMs }
+        var endIdx = readings.indexOfLast { it.dateMs <= windowEndMs }
+        if (startIdx == -1) startIdx = readings.lastIndex
+        if (endIdx == -1) endIdx = 0
+        startIdx = (startIdx - 1).coerceIn(0, readings.lastIndex)
+        endIdx = (endIdx + 1).coerceIn(0, readings.lastIndex)
+        if (startIdx <= endIdx) readings.subList(startIdx, endIdx + 1) else emptyList()
+    } else {
+        readings
+    }
     val minValue = if (isZoomed && visibleReadings.isNotEmpty()) {
         min(40f, (visibleReadings.minOf { it.sgv } - 20).toFloat())
     } else {
@@ -335,8 +351,9 @@ private fun ReadingCard(reading: GlucoseReading, thresholds: Thresholds) {
         else MaterialTheme.colorScheme.onSurfaceVariant
     )
 
-    reading.iob?.let { iob ->
-        Spacer(Modifier.height(8.dp))
+    Spacer(Modifier.height(8.dp))
+    val iob = reading.iob
+    if (iob != null) {
         Text(
             "IOB: ${"%.2f".format(iob)}u",
             style = MaterialTheme.typography.bodyMedium,
@@ -350,6 +367,19 @@ private fun ReadingCard(reading: GlucoseReading, thresholds: Thresholds) {
                 color = MaterialTheme.colorScheme.error
             )
         }
+    } else {
+        // Null (not zero) means no source has reported IOB at all - either
+        // Gluroo's own feed doesn't carry it and no phone is reporting the
+        // pump's own notification, or a phone was reporting but the pump
+        // disconnected/expired and the report went stale - see
+        // EXTERNAL_IOB_FRESHNESS_MS. Surfacing this explicitly instead of
+        // just omitting the row is the point: a caretaker seeing nothing
+        // here can't tell "not tracked" from "screen forgot to load."
+        Text(
+            "IOB not available",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 
     Spacer(Modifier.height(24.dp))

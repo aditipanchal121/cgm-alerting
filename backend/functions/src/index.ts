@@ -203,6 +203,25 @@ export const savePatientCredentials = onCall(async (request) => {
   return { ok: true };
 });
 
+/** Shared by claimIobSource and joinPatientAsFollower: adds uid as a
+ * follower unless it's already the owner - a no-op either way if uid is
+ * already a member, so both callables can call this unconditionally
+ * instead of only sometimes granting the account calling them any way to
+ * view the patient it just attached to. */
+async function ensureFollower(
+  patientRef: FirebaseFirestore.DocumentReference,
+  patientDoc: FirebaseFirestore.DocumentSnapshot,
+  uid: string,
+  displayName: string
+): Promise<void> {
+  if (patientDoc.data()?.ownerUid === uid) return;
+  await patientRef.update({ memberUids: admin.firestore.FieldValue.arrayUnion(uid) });
+  await patientRef.collection('members').doc(uid).set(
+    { role: 'follower', displayName },
+    { merge: true }
+  );
+}
+
 /** Self-service: the caller becomes the trusted IOB source for this patient
  * directly - deliberately no owner-approval step. Knowing the patientId is
  * already this app's de facto shared-secret boundary (the same trust model
@@ -210,7 +229,13 @@ export const savePatientCredentials = onCall(async (request) => {
  * owner manually copying the reporting device's UID - was unnecessary
  * friction for a single-family prototype. Whoever most recently claims it
  * wins; re-claiming (e.g. after switching which phone reports) is just
- * calling this again. */
+ * calling this again.
+ *
+ * Also makes the caller a follower (see ensureFollower) - claiming IOB
+ * source used to be entirely independent of the members/roles system,
+ * which meant reporting a patient's IOB didn't guarantee the reporting
+ * account could see that patient's Dashboard at all, let alone the
+ * *correct* one if it had been misconfigured against the wrong patient. */
 export const claimIobSource = onCall(async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Sign in required.');
   const { patientId } = (request.data ?? {}) as { patientId?: string };
@@ -218,12 +243,20 @@ export const claimIobSource = onCall(async (request) => {
     throw new HttpsError('invalid-argument', 'patientId is required.');
   }
 
-  const patientDoc = await db().collection('patients').doc(patientId).get();
+  const patientRef = db().collection('patients').doc(patientId);
+  const patientDoc = await patientRef.get();
   if (!patientDoc.exists) {
     throw new HttpsError('not-found', 'No patient with that ID.');
   }
 
-  await db().collection('patients').doc(patientId).update({ iobSourceUid: request.auth.uid });
+  const uid = request.auth.uid;
+  await patientRef.update({ iobSourceUid: uid });
+  await ensureFollower(
+    patientRef,
+    patientDoc,
+    uid,
+    request.auth.token.name || request.auth.token.email || 'IOB source'
+  );
   // Returned so the app can show *whose* record this device just linked to -
   // patientId alone is an opaque string a caretaker can't visually verify,
   // and entering the wrong one (e.g. their own record's ID instead of the
@@ -255,13 +288,12 @@ export const joinPatientAsFollower = onCall(async (request) => {
   }
 
   const uid = request.auth.uid;
-  if (patientDoc.data()?.ownerUid !== uid) {
-    await patientRef.update({ memberUids: admin.firestore.FieldValue.arrayUnion(uid) });
-    await patientRef.collection('members').doc(uid).set({
-      role: 'follower',
-      displayName: followerDisplayName || request.auth.token.name || request.auth.token.email || 'Follower',
-    });
-  }
+  await ensureFollower(
+    patientRef,
+    patientDoc,
+    uid,
+    followerDisplayName || request.auth.token.name || request.auth.token.email || 'Follower'
+  );
   // Same reasoning as claimIobSource's return value - confirms which
   // patient record was just joined rather than a bare "ok".
   return { ok: true, displayName: patientDoc.data()?.displayName ?? '' };

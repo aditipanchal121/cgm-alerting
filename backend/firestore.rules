@@ -39,14 +39,11 @@ service cloud.firestore {
         allow write: if false;
       }
 
-      // Alert event log: written by Cloud Functions; members may only toggle
-      // the acknowledged fields, never create/delete history entries.
+      // Alert event log: written only by Cloud Functions, read-only to
+      // members - no acknowledge step, so no client writes at all.
       match /alerts/{doc} {
         allow read: if isMember(patientId);
-        allow update: if isMember(patientId) &&
-          request.resource.data.diff(resource.data).affectedKeys()
-            .hasOnly(['acknowledged', 'acknowledgedAt', 'acknowledgedBy']);
-        allow create, delete: if false;
+        allow create, update, delete: if false;
       }
 
       // Directly-reported IOB (e.g. a paired phone's NotificationListenerService

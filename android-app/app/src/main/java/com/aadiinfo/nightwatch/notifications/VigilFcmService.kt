@@ -55,10 +55,14 @@ class VigilFcmService : FirebaseMessagingService() {
         val iobUnreliable = data["iobUnreliable"]?.toBoolean() ?: false
 
         val title = "$displayName: $sgv mg/dL $arrow"
+        // Null (not zero) means no source has reported IOB - shown explicitly
+        // rather than leaving this blank, so a disconnected/expired pump
+        // reads as "not available" instead of looking like the notification
+        // failed to update at all.
         val text = if (iob != null) {
             "IOB: ${"%.2f".format(iob)}u" + if (iobUnreliable) " (may be unreliable)" else ""
         } else {
-            ""
+            "IOB not available"
         }
 
         NotificationHelper.updateReadingStatus(applicationContext, title, text)

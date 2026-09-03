@@ -1,6 +1,7 @@
 package com.aadiinfo.nightwatch.ui
 
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -17,6 +18,7 @@ import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Insights
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Sync
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -54,13 +56,13 @@ import com.aadiinfo.nightwatch.ui.alertsettings.AlertSettingsScreen
 import com.aadiinfo.nightwatch.ui.auth.LoginScreen
 import com.aadiinfo.nightwatch.ui.dashboard.DashboardScreen
 import com.aadiinfo.nightwatch.ui.history.HistoryScreen
-import com.aadiinfo.nightwatch.ui.iobsource.IobSourceSetupScreen
-import com.aadiinfo.nightwatch.ui.join.JoinPatientScreen
+import com.aadiinfo.nightwatch.ui.connect.ConnectToPatientScreen
 import com.aadiinfo.nightwatch.ui.mcupairing.McuPairingScreen
 import com.aadiinfo.nightwatch.ui.predictions.PredictionsScreen
 import com.aadiinfo.nightwatch.ui.setup.SetupScreen
 import com.aadiinfo.nightwatch.ui.theme.VigilTheme
 import com.google.firebase.Firebase
+import com.google.firebase.crashlytics.crashlytics
 import com.google.firebase.messaging.messaging
 import kotlinx.coroutines.tasks.await
 
@@ -80,6 +82,10 @@ fun VigilApp(
         }
 
         val uid = currentUser.uid
+        // Tags crash reports with which of the (currently 4 known) family
+        // accounts hit them - with so few users, "who saw this" is often the
+        // fastest way to reproduce it.
+        LaunchedEffect(uid) { Firebase.crashlytics.setUserId(uid) }
 
         // onNewToken (VigilFcmService) only fires when FCM mints or
         // rotates a token, which typically already happened at first app
@@ -98,19 +104,17 @@ fun VigilApp(
         // silently hid it for any account that already had a patient tied
         // to it, e.g. a leftover test one). See MainScreen's toolbar icon
         // for the entry point once a patient exists, and the empty-state
-        // link below for before one does.
-        var showIobSourceSetup by remember { mutableStateOf(false) }
-        if (showIobSourceSetup) {
-            IobSourceSetupScreen(patientRepository, onBack = { showIobSourceSetup = false })
-            return@VigilTheme
-        }
-
-        // Same reasoning as showIobSourceSetup above: reachable regardless of
-        // whether this account already has a patient, not nested inside the
-        // zero-patients branch only.
-        var showJoinPatient by remember { mutableStateOf(false) }
-        if (showJoinPatient) {
-            JoinPatientScreen(patientRepository, onJoined = { showJoinPatient = false })
+        // link below for before one does. Handles both "follow a family
+        // member" and "this phone also reports IOB" in one flow, entering
+        // the patient ID only once - see ConnectToPatientScreen's doc
+        // comment for why that used to be two separate screens/fields.
+        var showConnect by remember { mutableStateOf(false) }
+        if (showConnect) {
+            ConnectToPatientScreen(
+                patientRepository,
+                onBack = { showConnect = false },
+                onDone = { showConnect = false }
+            )
             return@VigilTheme
         }
 
@@ -119,17 +123,33 @@ fun VigilApp(
         when (val list = patients) {
             null -> LoadingScreen()
             else -> if (list.isEmpty()) {
-                Box(modifier = Modifier.fillMaxSize()) {
+                // "Join" is the default/primary choice, not "create" - most new
+                // accounts are a family member attaching to a profile someone
+                // else already set up, and showing a create form front-and-
+                // center (with join as a small link underneath, as this used
+                // to) made it easy to create a redundant second profile by
+                // mistake instead of noticing the link - which is exactly what
+                // produced the orphan-profile bug this screen now prevents.
+                var showCreateProfile by remember { mutableStateOf(false) }
+                if (showCreateProfile) {
                     SetupScreen(patientRepository, uid) { /* patient list flow refreshes on write */ }
+                } else {
                     Column(
-                        modifier = Modifier.align(Alignment.BottomCenter).padding(24.dp),
+                        modifier = Modifier.fillMaxSize().padding(24.dp),
+                        verticalArrangement = Arrangement.Center,
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        TextButton(onClick = { showJoinPatient = true }) {
-                            Text("Following a family member who already set this up?")
+                        Text("Welcome to Vigil", style = MaterialTheme.typography.headlineSmall)
+                        Spacer(Modifier.height(24.dp))
+                        Button(onClick = { showConnect = true }, modifier = Modifier.fillMaxWidth()) {
+                            Text("I have a Profile ID to follow")
                         }
-                        TextButton(onClick = { showIobSourceSetup = true }) {
-                            Text("This device belongs to a family member's pump instead?")
+                        Spacer(Modifier.height(12.dp))
+                        OutlinedButton(
+                            onClick = { showCreateProfile = true },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("I am the CGM / pump user")
                         }
                     }
                 }
@@ -143,7 +163,7 @@ fun VigilApp(
                         patient = patient,
                         isOwner = patient.ownerUid == uid,
                         onSignOut = authRepository::signOut,
-                        onShowIobSourceSetup = { showIobSourceSetup = true }
+                        onShowConnect = { showConnect = true }
                     )
                 }
             }
@@ -173,7 +193,7 @@ private fun MainScreen(
     patient: Patient,
     isOwner: Boolean,
     onSignOut: () -> Unit,
-    onShowIobSourceSetup: () -> Unit
+    onShowConnect: () -> Unit
 ) {
     var tab by remember { mutableStateOf(Tab.DASHBOARD) }
     val tabs = if (isOwner) Tab.entries else listOf(Tab.DASHBOARD, Tab.HISTORY, Tab.PREDICTIONS)
@@ -195,8 +215,8 @@ private fun MainScreen(
                     actionIconContentColor = Color.White
                 ),
                 actions = {
-                    IconButton(onClick = onShowIobSourceSetup) {
-                        Icon(Icons.Filled.Sync, contentDescription = "IOB source setup")
+                    IconButton(onClick = onShowConnect) {
+                        Icon(Icons.Filled.Sync, contentDescription = "Connect to a family member")
                     }
                     IconButton(onClick = onSignOut) {
                         Icon(Icons.Filled.ExitToApp, contentDescription = "Sign out")
@@ -275,9 +295,9 @@ private fun PatientIdShareSection(patientId: String, patientDisplayName: String)
     var copied by remember { mutableStateOf(false) }
 
     Column(modifier = Modifier.fillMaxWidth().padding(24.dp, 24.dp, 24.dp, 0.dp)) {
-        Text("Patient ID (for $patientDisplayName)", style = MaterialTheme.typography.titleSmall)
+        Text("Profile ID (for $patientDisplayName)", style = MaterialTheme.typography.titleSmall)
         Text(
-            "This identifies $patientDisplayName's record specifically - not " +
+            "This identifies $patientDisplayName's profile specifically - not " +
                 "you, and not whoever you're about to send it to. Share it with " +
                 "a family member's phone so they can follow $patientDisplayName, " +
                 "or so a phone reporting IOB from $patientDisplayName's pump app " +

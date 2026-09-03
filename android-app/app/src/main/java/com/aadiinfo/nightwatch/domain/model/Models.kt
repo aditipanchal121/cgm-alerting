@@ -40,8 +40,7 @@ data class AlertEvent(
     val severity: Severity,
     val value: Double?,
     val message: String,
-    val timestamp: Long,
-    val acknowledged: Boolean = false
+    val timestamp: Long
 )
 
 data class Thresholds(

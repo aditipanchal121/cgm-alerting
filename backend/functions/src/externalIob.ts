@@ -36,9 +36,18 @@ export async function getFreshExternalIob(
 
 /** Fired immediately (via a Firestore trigger, not the 5-minute pollGlucose
  * schedule) whenever a fresh externally-reported IOB is written, so the
- * persistent notification/widget update within seconds instead of waiting
- * for the next poll cycle. Recombines the new IOB with whichever sgv/
- * direction the last poll already wrote - this never re-fetches Gluroo. */
+ * persistent notification/widget *and* the in-app Dashboard update within
+ * seconds instead of waiting for the next poll cycle. Recombines the new
+ * IOB with whichever sgv/direction the last poll already wrote - this
+ * never re-fetches Gluroo.
+ *
+ * Patches the existing latest `readings` doc in place rather than adding a
+ * new one - adding a new doc every time IOB changes (which can be far more
+ * often than every 5 minutes) would pollute the training-data cadence with
+ * entries that repeat a stale sgv/direction just to carry a fresher iob.
+ * `externalIobHistory` is already the accurate source for a training join
+ * (see backend/README.md), so patching this doc only needs to be good
+ * enough for live display, not a perfectly-timestamped training record. */
 export async function pushExternalIobUpdate(
   db: admin.firestore.Firestore,
   patientId: string,
@@ -58,8 +67,9 @@ export async function pushExternalIobUpdate(
     .orderBy('dateMs', 'desc')
     .limit(1)
     .get();
-  const latestReading = latestReadingSnap.docs[0]?.data() as GlucoseReading | undefined;
-  if (!latestReading) {
+  const latestReadingDoc = latestReadingSnap.docs[0];
+  const latestReading = latestReadingDoc?.data() as GlucoseReading | undefined;
+  if (!latestReadingDoc || !latestReading) {
     console.warn(`pushExternalIobUpdate(${patientId}): no readings yet, nothing to recombine with`);
     return;
   }
@@ -70,5 +80,6 @@ export async function pushExternalIobUpdate(
     iobUnreliable: false,
   };
 
+  await latestReadingDoc.ref.update({ iob, iobUnreliable: false });
   await sendReadingStatusPush(patientId, patient.displayName ?? 'Vigil', reading);
 }

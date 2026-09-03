@@ -208,5 +208,5 @@ function makeEvent(
   message: string,
   timestamp: number
 ): AlertEvent {
-  return { type, severity, value, message, timestamp, acknowledged: false };
+  return { type, severity, value, message, timestamp };
 }

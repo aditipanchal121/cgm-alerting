@@ -37,7 +37,7 @@ fun McuPairingScreen(patientRepository: PatientRepository, patientId: String) {
         Text(
             "On first boot the ESP32 opens a WiFi setup portal and shows a device " +
                 "ID (also printed over serial). Connect it to your WiFi via that " +
-                "portal, then enter its device ID here to link it to this patient.",
+                "portal, then enter its device ID here to link it to this profile.",
             style = MaterialTheme.typography.bodyMedium
         )
         Spacer(Modifier.height(16.dp))
