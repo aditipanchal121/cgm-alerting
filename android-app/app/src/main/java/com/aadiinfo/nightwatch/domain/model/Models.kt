@@ -64,7 +64,14 @@ data class Thresholds(
     val nightWindowStart: String = "22:00",
     val nightWindowEnd: String = "07:00",
     val timezone: String = TimeZone.getDefault().id,
-    val staleMinutes: Int = 20,
+    val staleMinutes: Int = 20
+)
+
+/** Physiological facts about the patient, not personal alerting preferences -
+ * shared across the whole family (patients/{patientId}/thresholds/current)
+ * rather than per-member like Thresholds above, since there's only one real
+ * insulin sensitivity/carb ratio regardless of who's viewing the app. */
+data class PatientPhysiology(
     // mg/dL that 1 unit of insulin is expected to lower glucose by.
     val insulinSensitivityFactor: Double = 40.0,
     // Grams of carbs covered by 1 unit of insulin (insulin-to-carb ratio).

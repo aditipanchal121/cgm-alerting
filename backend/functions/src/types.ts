@@ -26,6 +26,13 @@ export interface Thresholds {
   timezone: string;
   /** how old the latest reading can be before it's flagged as a signal-loss alert */
   staleMinutes: number;
+}
+
+/** Physiological facts about the patient, not personal alerting preferences -
+ * shared across the whole family (patients/{patientId}/thresholds/current)
+ * rather than per-member like Thresholds above, since there's only one real
+ * insulin sensitivity/carb ratio regardless of who's viewing the app. */
+export interface PatientPhysiology {
   /** mg/dL that 1 unit of insulin is expected to lower glucose by. */
   insulinSensitivityFactor: number;
   /** Grams of carbs covered by 1 unit of insulin (insulin-to-carb ratio). */

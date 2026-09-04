@@ -67,3 +67,6 @@ node_modules/
 
 # dataconnect generated files
 .dataconnect
+
+# Exported training data (real family health data - never commit)
+functions/training-data-export/

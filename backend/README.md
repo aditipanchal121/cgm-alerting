@@ -34,12 +34,26 @@ project.
 See `firestore.rules` for the authoritative access model:
 - `patients/{patientId}` - one per person being monitored; owner + follower
   members live in `patients/{patientId}/members/{uid}`.
-- `patients/{patientId}/thresholds/current` - alert thresholds, owner-write only.
+- `patients/{patientId}/thresholds/current` - `PatientPhysiology`: insulin
+  sensitivity factor and carb ratio. Shared across the whole family - every
+  member can read it, but only the owner (the patient himself, who creates
+  the record everyone else follows) can write it - unlike
+  `members/{uid}/thresholds/current` below, since these are physiological
+  facts about the patient rather than a personal alerting preference.
+- `patients/{patientId}/members/{uid}/thresholds/current` - personal alert
+  thresholds (low/high mg/dL, IOB threshold, night window, etc.) - each
+  member sets their own.
 - `patients/{patientId}/readings` - glucose/IOB/COB history, written only by
-  `pollGlucose`. Kept for a full year (a deliberate training-data retention
-  policy, not just an operational log) by the `cleanupOldReadings` scheduled
-  function - storage cost is trivial at this volume (~15-16 MB/year/patient),
-  this is about having an explicit, bounded policy rather than unbounded growth.
+  `pollGlucose` via `persistNewReadings`, which persists every entry fetched
+  since the patient doc's own `lastReadingMs` cursor (not just the newest),
+  so a delayed/failed poll cycle doesn't silently drop a reading the way it
+  used to. Each doc also carries the `insulinSensitivityFactor`/`carbRatio`
+  that were in effect when it was written, so a later training join doesn't
+  have to assume today's values applied historically. Kept for a full year
+  (a deliberate training-data retention policy, not just an operational log)
+  by the `cleanupOldReadings` scheduled function - storage cost is trivial
+  at this volume (~15-16 MB/year/patient), this is about having an explicit,
+  bounded policy rather than unbounded growth.
 - `patients/{patientId}/alerts` - alert event log, written only by `pollGlucose`.
   A separate `cleanupOldAlerts` scheduled function deletes alerts older than
   3 days once a day, so this doesn't grow without bound.
@@ -66,6 +80,24 @@ See `firestore.rules` for the authoritative access model:
   `android-app/README.md`).
 - `devices/{deviceId}` - ESP32 pairing: `{ patientId, pairedAt, pairedBy }`.
 - Realtime Database `devices/{deviceId}/alert` - what the ESP32 firmware streams.
+
+## Exporting aligned training data
+
+`functions/src/scripts/exportTrainingData.ts` is a local-only script (not
+deployed - it's never imported by `index.ts`) that pulls a patient's
+`readings`, `treatments`, and `externalIobHistory`, aligns them into one CSV
+row per reading (nearest-past IOB report, trailing insulin/carb totals), and
+reports any gap in the readings sequence. Run from `functions/`:
+
+```
+npm run export-training-data -- <patientId>
+```
+
+Needs Application Default Credentials to reach Firestore locally - either
+`gcloud auth application-default login` once, or a service account key JSON
+(Firebase console > Project settings > Service accounts) via
+`GOOGLE_APPLICATION_CREDENTIALS`. Output goes to `functions/training-data-export/`
+(gitignored - this is real health data).
 
 ## Known prototype-level simplifications (call out before relying on this for real overnight monitoring)
 

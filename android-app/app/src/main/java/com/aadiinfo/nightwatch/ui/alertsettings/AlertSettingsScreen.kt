@@ -24,9 +24,9 @@ import com.aadiinfo.nightwatch.data.repository.PatientRepository
 import com.aadiinfo.nightwatch.ui.vmFactory
 
 @Composable
-fun AlertSettingsScreen(patientRepository: PatientRepository, patientId: String, uid: String) {
+fun AlertSettingsScreen(patientRepository: PatientRepository, patientId: String, uid: String, isOwner: Boolean) {
     val viewModel: AlertSettingsViewModel =
-        viewModel(factory = vmFactory { AlertSettingsViewModel(patientRepository, patientId, uid) })
+        viewModel(factory = vmFactory { AlertSettingsViewModel(patientRepository, patientId, uid, isOwner) })
     val state = viewModel.uiState
 
     if (state.loading) {
@@ -95,12 +95,14 @@ fun AlertSettingsScreen(patientRepository: PatientRepository, patientId: String,
             value = state.insulinSensitivityFactor,
             onValueChange = { v -> viewModel.update { it.copy(insulinSensitivityFactor = v) } },
             label = { Text("Insulin sensitivity factor (mg/dL per unit)") },
+            enabled = isOwner,
             modifier = Modifier.fillMaxWidth()
         )
         Text(
-            "Used by the IOB-aware predictor on the Predictions tab, not for " +
-                "alerting - how much 1 unit of insulin is expected to lower " +
-                "glucose by.",
+            "Shared for the whole family, not personal to this account - how " +
+                "much 1 unit of insulin is expected to lower glucose by. Used " +
+                "by the Predictions tab, not for alerting." +
+                if (isOwner) "" else " Only the patient can change this.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -110,11 +112,11 @@ fun AlertSettingsScreen(patientRepository: PatientRepository, patientId: String,
             value = state.carbRatio,
             onValueChange = { v -> viewModel.update { it.copy(carbRatio = v) } },
             label = { Text("Carb ratio (g of carbs per unit)") },
+            enabled = isOwner,
             modifier = Modifier.fillMaxWidth()
         )
         Text(
-            "Used by the multi-bolus predictor on the Predictions tab, not for " +
-                "alerting - your insulin-to-carb ratio.",
+            "Also shared for the whole family." + if (isOwner) "" else " Only the patient can change this.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )

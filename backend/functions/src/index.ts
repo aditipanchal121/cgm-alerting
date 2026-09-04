@@ -9,7 +9,7 @@ import { sendAlertPush, sendReadingStatusPush } from './fcm';
 import { getPatientSecret, storePatientSecret } from './secretManager';
 import { deleteOldAlerts, deleteOldReadings } from './cleanup';
 import { getFreshExternalIob, pushExternalIobUpdate } from './externalIob';
-import { AlertEvent, Thresholds } from './types';
+import { AlertEvent, GlucoseReading, PatientPhysiology, Thresholds } from './types';
 
 admin.initializeApp();
 setGlobalOptions({ region: 'us-central1', maxInstances: 10 });
@@ -48,6 +48,9 @@ const DEFAULT_THRESHOLDS: Thresholds = {
   nightWindowEnd: '07:00',
   timezone: 'America/Los_Angeles',
   staleMinutes: 20,
+};
+
+const DEFAULT_PHYSIOLOGY: PatientPhysiology = {
   insulinSensitivityFactor: 40,
   carbRatio: 10,
 };
@@ -116,12 +119,8 @@ async function pollOnePatient(patientId: string, patient: FirebaseFirestore.Docu
       await db().collection('patients').doc(patientId).update({ lastNonZeroIob: latest.iob });
     }
 
-    await db()
-      .collection('patients')
-      .doc(patientId)
-      .collection('readings')
-      .add({ ...latest, fetchedAt: nowMs });
-
+    const physiology = await getPhysiology(patientId);
+    await persistNewReadings(patientId, patient, readings, nowMs, physiology);
     await ingestNewTreatments(patientId, patient, apiSecret);
 
     // Always driven by the actual reading, independent of whether it crossed
@@ -171,6 +170,62 @@ async function pollOnePatient(patientId: string, patient: FirebaseFirestore.Docu
   } catch (err) {
     console.error(`pollGlucose failed for patient ${patientId}`, err);
   }
+}
+
+/** Persists every fetched entry newer than the patient doc's own
+ * lastReadingMs cursor, not just the single newest one - a poll fetches up
+ * to 6 recent entries (see fetchRecentReadings) but previously only ever
+ * wrote the newest, so a delayed/failed pollGlucose cycle (a cold start, a
+ * quota throttle, an outage) permanently dropped whichever entries it would
+ * otherwise have caught up on next time - unlike ingestNewTreatments, which
+ * already self-heals this way via lastTreatmentMs. Also prevents writing a
+ * duplicate reading doc when Nightscout hasn't posted a new entry since the
+ * last poll (same dateMs as already stored) - excluded by the same cursor
+ * check.
+ *
+ * Only the truly-newest entry gets the live externalIob/glitch-detection
+ * treatment already applied to `readings[readings.length - 1]` by the
+ * caller - backfilled older entries are written as fetched from Nightscout.
+ * That's intentional: externalIobHistory is the accurate source for
+ * reconstructing historical IOB at any of these entries' exact timestamps
+ * (see backend/README.md's training-join note), so there's no need to
+ * duplicate that alignment work here on every poll. */
+async function persistNewReadings(
+  patientId: string,
+  patient: FirebaseFirestore.DocumentData,
+  readings: GlucoseReading[],
+  nowMs: number,
+  physiology: PatientPhysiology
+): Promise<void> {
+  const lastReadingMs = typeof patient.lastReadingMs === 'number' ? patient.lastReadingMs : null;
+  const newReadings = readings.filter((r) => lastReadingMs === null || r.dateMs > lastReadingMs);
+  if (!newReadings.length) return;
+
+  const patientRef = db().collection('patients').doc(patientId);
+  const batch = db().batch();
+  let maxMs = lastReadingMs ?? 0;
+  for (const reading of newReadings) {
+    batch.set(patientRef.collection('readings').doc(), {
+      ...reading,
+      fetchedAt: nowMs,
+      insulinSensitivityFactor: physiology.insulinSensitivityFactor,
+      carbRatio: physiology.carbRatio,
+    });
+    maxMs = Math.max(maxMs, reading.dateMs);
+  }
+  await batch.commit();
+  await patientRef.update({ lastReadingMs: maxMs });
+}
+
+/** Shared per-patient physiology (patients/{patientId}/thresholds/current) -
+ * see PatientPhysiology's doc comment for why this is patient-level rather
+ * than per-member like Thresholds. Read once per poll (not per-member) and
+ * snapshotted onto each new reading (see persistNewReadings) so a training
+ * join always knows what was actually in effect at that point in time,
+ * regardless of what either value gets changed to later. */
+async function getPhysiology(patientId: string): Promise<PatientPhysiology> {
+  const doc = await db().collection('patients').doc(patientId).collection('thresholds').doc('current').get();
+  return { ...DEFAULT_PHYSIOLOGY, ...(doc.data() ?? {}) };
 }
 
 /** Persists bolus/carb history for future model training (see backend/README.md's

@@ -45,7 +45,7 @@ alerting (`backend/functions/src/alertEngine.ts` does that, independently).
 It reads actual bolus and carb history and evaluates a standard exponential
 activity curve at the real elapsed time since each one - see the "Model
 details" link on this predictor's info dialog in-app, or
-[LoopDocs' insulin modeling page](https://loopkit.github.io/loopdocs/operation/algorithm/insulin-modeling/)
+[LoopDocs' glucose prediction page](https://loopkit.github.io/loopdocs/operation/algorithm/prediction/)
 directly, for the curve's full derivation:
 
 ```
@@ -70,8 +70,8 @@ Where each value comes from:
 | `t_i`/`t_j` | minutes elapsed since the treatment | `(latestReading.dateMs - mills) / 60000`, recomputed every prediction cycle |
 | `td`, `tp` (insulin) | duration of action / time to peak | fixed constants, `INSULIN_DURATION_MINUTES = 240`, `INSULIN_PEAK_MINUTES = 75`, shared across boluses |
 | `td_j`, `tp_j` (carbs) | absorption duration / time to peak | `patients/{id}/treatments/{doc}.durationMinutes` if present (Nightscout's per-entry `absorptionTime`), else `CARB_DEFAULT_DURATION_MINUTES = 180`; `tp_j` is always `td_j * CARB_PEAK_RATIO` |
-| `ISF` | insulin sensitivity factor (mg/dL lowered per unit) | `Thresholds.insulinSensitivityFactor`, the same per-member value `IobAwarePredictor` and `AlertSettingsScreen` use |
-| `CSF` | carb sensitivity factor (mg/dL raised per gram) | derived as `ISF / Thresholds.carbRatio`, not independently measured/entered |
+| `ISF` | insulin sensitivity factor (mg/dL lowered per unit) | `PatientPhysiology.insulinSensitivityFactor` - shared for the whole patient (`patients/{id}/thresholds/current`, owner-write only), the same value `IobAwarePredictor` and `AlertSettingsScreen` use |
+| `CSF` | carb sensitivity factor (mg/dL raised per gram) | derived as `ISF / PatientPhysiology.carbRatio`, not independently measured/entered |
 | current glucose | most recent reading | `patients/{id}/readings`, via `observeRecentReadings` |
 | `30` | prediction horizon, minutes | `horizonMinutes` parameter, same as every other predictor in this file |
 
@@ -85,6 +85,6 @@ curve; each contributes its own share of the total.
 of carbs raises glucose by X mg/dL" directly - different carb types (sugar
 vs. starch, for example) can raise glucose differently, so this derivation
 assumes uniform behavior across carb types as a simplification. What is
-known is the insulin-to-carb ratio used for dosing (`Thresholds.carbRatio`),
+known is the insulin-to-carb ratio used for dosing (`PatientPhysiology.carbRatio`),
 so `CSF = ISF / carbRatio` is used instead - the standard clinical
 relationship between the two ratios, not an independent estimate.

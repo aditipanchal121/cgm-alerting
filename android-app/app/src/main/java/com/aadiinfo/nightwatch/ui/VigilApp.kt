@@ -318,7 +318,7 @@ private fun MainScreen(
                                 LeavePatientButton(patientRepository, patient.id, patient.displayName)
                             }
                             Box(modifier = Modifier.weight(1f)) {
-                                AlertSettingsScreen(patientRepository, patient.id, uid)
+                                AlertSettingsScreen(patientRepository, patient.id, uid, isOwner)
                             }
                         }
                     }

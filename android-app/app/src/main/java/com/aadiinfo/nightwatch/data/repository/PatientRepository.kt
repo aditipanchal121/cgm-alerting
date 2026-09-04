@@ -3,6 +3,7 @@ package com.aadiinfo.nightwatch.data.repository
 import com.aadiinfo.nightwatch.domain.model.AlertEvent
 import com.aadiinfo.nightwatch.domain.model.GlucoseReading
 import com.aadiinfo.nightwatch.domain.model.Patient
+import com.aadiinfo.nightwatch.domain.model.PatientPhysiology
 import com.aadiinfo.nightwatch.domain.model.Thresholds
 import com.aadiinfo.nightwatch.domain.model.TreatmentEvent
 import com.google.firebase.firestore.FirebaseFirestore
@@ -37,14 +38,21 @@ class PatientRepository(
             .map { it?.toPatient() }
 
     // Personal to each member, not shared per patient - each family member
-    // sets their own alarm/alert thresholds and display range (see the
-    // conversation that moved this from patients/{id}/thresholds/current).
+    // sets their own alarm/alert thresholds and display range.
     fun observeThresholds(patientId: String, uid: String): Flow<Thresholds> =
         firestore.collection("patients").document(patientId)
             .collection("members").document(uid)
             .collection("thresholds").document("current")
             .snapshotFlow()
             .map { it?.toThresholds() ?: Thresholds() }
+
+    // Shared across the whole family - see PatientPhysiology's doc comment
+    // for why this is patient-level rather than per-member like Thresholds.
+    fun observePatientPhysiology(patientId: String): Flow<PatientPhysiology> =
+        firestore.collection("patients").document(patientId)
+            .collection("thresholds").document("current")
+            .snapshotFlow()
+            .map { it?.toPatientPhysiology() ?: PatientPhysiology() }
 
     fun observeLatestReading(patientId: String): Flow<GlucoseReading?> =
         firestore.collection("patients").document(patientId)
@@ -151,6 +159,13 @@ class PatientRepository(
             .collection("members").document(uid)
             .collection("thresholds").document("current")
             .set(thresholds.toMap())
+            .await()
+    }
+
+    suspend fun savePatientPhysiology(patientId: String, physiology: PatientPhysiology) {
+        firestore.collection("patients").document(patientId)
+            .collection("thresholds").document("current")
+            .set(physiology.toMap())
             .await()
     }
 

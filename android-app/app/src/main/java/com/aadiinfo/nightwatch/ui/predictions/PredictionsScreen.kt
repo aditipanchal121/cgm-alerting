@@ -61,7 +61,8 @@ private val PREDICTOR_COLORS = listOf(
     Color(0xFF1E88E5), // blue
     Color(0xFF8E24AA), // purple
     Color(0xFF00897B), // teal
-    Color(0xFFF4511E) // deep orange
+    Color(0xFFF4511E), // deep orange
+    Color(0xFFFBC02D) // amber
 )
 
 @Composable

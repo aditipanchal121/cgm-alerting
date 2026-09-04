@@ -1,6 +1,7 @@
 package com.aadiinfo.nightwatch.domain
 
 import com.aadiinfo.nightwatch.domain.model.GlucoseReading
+import com.aadiinfo.nightwatch.domain.model.PatientPhysiology
 import com.aadiinfo.nightwatch.domain.model.Thresholds
 import com.aadiinfo.nightwatch.domain.model.TrendDirection
 import com.aadiinfo.nightwatch.domain.model.TreatmentEvent
@@ -46,7 +47,8 @@ interface GlucosePredictor {
         readings: List<GlucoseReading>,
         thresholds: Thresholds,
         horizonMinutes: Int = 30,
-        treatments: List<TreatmentEvent> = emptyList()
+        treatments: List<TreatmentEvent> = emptyList(),
+        physiology: PatientPhysiology = PatientPhysiology()
     ): PredictionResult
 }
 
@@ -62,7 +64,8 @@ class LinearRegressionPredictor : GlucosePredictor {
         readings: List<GlucoseReading>,
         thresholds: Thresholds,
         horizonMinutes: Int,
-        treatments: List<TreatmentEvent>
+        treatments: List<TreatmentEvent>,
+        physiology: PatientPhysiology
     ): PredictionResult {
         val sorted = readings.sortedBy { it.dateMs }
         return linearProjection(sorted, thresholds.lowMgdl, horizonMinutes)
@@ -134,7 +137,8 @@ class IobAwarePredictor : GlucosePredictor {
         readings: List<GlucoseReading>,
         thresholds: Thresholds,
         horizonMinutes: Int,
-        treatments: List<TreatmentEvent>
+        treatments: List<TreatmentEvent>,
+        physiology: PatientPhysiology
     ): PredictionResult {
         val sorted = readings.sortedBy { it.dateMs }
         if (sorted.size < 2) {
@@ -153,12 +157,12 @@ class IobAwarePredictor : GlucosePredictor {
         val canScale = observedRatePerMinute < 0 &&
             iob != null &&
             !last.iobUnreliable &&
-            thresholds.insulinSensitivityFactor > 0.0
+            physiology.insulinSensitivityFactor > 0.0
         val effectiveRatePerMinute = if (canScale) {
             // Coerced to at least 1 mg/dL to avoid dividing by zero or
             // flipping sign when the reading is already at/below the floor.
             val distanceAboveFloor = (last.sgv - MIN_DISPLAYABLE_MGDL).coerceAtLeast(1.0)
-            val iobFactor = (iob!! * thresholds.insulinSensitivityFactor) / distanceAboveFloor
+            val iobFactor = (iob!! * physiology.insulinSensitivityFactor) / distanceAboveFloor
             observedRatePerMinute * iobFactor
         } else {
             observedRatePerMinute
@@ -204,7 +208,8 @@ class DirectionAwarePredictor : GlucosePredictor {
         readings: List<GlucoseReading>,
         thresholds: Thresholds,
         horizonMinutes: Int,
-        treatments: List<TreatmentEvent>
+        treatments: List<TreatmentEvent>,
+        physiology: PatientPhysiology
     ): PredictionResult {
         val sorted = readings.sortedBy { it.dateMs }
         if (sorted.size < 2) {
@@ -232,6 +237,15 @@ private fun windowedReadings(sorted: List<GlucoseReading>, windowMinutes: Int?):
     return if (windowed.size >= 2) windowed else sorted
 }
 
+/** Welch G, Bishop G. "An Introduction to the Kalman Filter." UNC Chapel
+ * Hill, TR 95-041 - see [KalmanFilterPredictor.sourceUrl]. Also see
+ * Facchinetti A, Sparacino G, Cobelli C. "Real-Time Improvement of
+ * Continuous Glucose Monitoring Accuracy: The Smart Sensor Concept."
+ * Diabetes Care, 2013, for Kalman filtering applied specifically to CGM
+ * signal smoothing. */
+private const val KALMAN_FILTER_SOURCE_URL =
+    "https://www.cs.utexas.edu/~pstone/Courses/393Rfall15/readings/Welch+Bishop-TR-95.pdf"
+
 /**
  * Constant-velocity Kalman filter over state [glucose, rate-of-change],
  * updated sequentially through the window's readings, then extrapolated
@@ -240,14 +254,6 @@ private fun windowedReadings(sorted: List<GlucoseReading>, windowMinutes: Int?):
  * reading is partly discounted rather than taken at face value. Does not
  * estimate acceleration - the output is always a straight-line extrapolation
  * from the final smoothed rate.
- *
- * See:
- * - Welch G, Bishop G. "An Introduction to the Kalman Filter." UNC Chapel
- *   Hill, TR 95-041.
- * - Facchinetti A, Sparacino G, Cobelli C. "Real-Time Improvement of
- *   Continuous Glucose Monitoring Accuracy: The Smart Sensor Concept."
- *   Diabetes Care, 2013 (Kalman filtering applied specifically to CGM
- *   signal smoothing).
  */
 class KalmanFilterPredictor : GlucosePredictor {
     override val name = "Kalman filter"
@@ -255,16 +261,17 @@ class KalmanFilterPredictor : GlucosePredictor {
         "Recursively estimates a smoothed rate of change from the noisy CGM " +
             "readings, discounting ones its own uncertainty says are likely " +
             "just sensor noise, then extrapolates that single rate forward. " +
-            "The standard technique for this exact problem - see Welch & " +
-            "Bishop, \"An Introduction to the Kalman Filter\" (UNC Chapel " +
-            "Hill TR 95-041), and Facchinetti et al. 2013, Diabetes Care, on " +
-            "Kalman filtering for CGM signal smoothing specifically."
+            "The standard technique for this exact problem (see the model " +
+            "details link below); also see Facchinetti et al. 2013, Diabetes " +
+            "Care, on Kalman filtering for CGM signal smoothing specifically."
+    override val sourceUrl = KALMAN_FILTER_SOURCE_URL
 
     override fun predict(
         readings: List<GlucoseReading>,
         thresholds: Thresholds,
         horizonMinutes: Int,
-        treatments: List<TreatmentEvent>
+        treatments: List<TreatmentEvent>,
+        physiology: PatientPhysiology
     ): PredictionResult {
         val sorted = readings.sortedBy { it.dateMs }
         if (sorted.size < 2) {
@@ -360,7 +367,7 @@ private const val CARB_PEAK_RATIO = INSULIN_PEAK_MINUTES / INSULIN_DURATION_MINU
 /** Full derivation of [activityRemainingFraction]'s curve - see
  * [MultiBolusInsulinActivityPredictor.sourceUrl]. */
 private const val INSULIN_MODEL_SOURCE_URL =
-    "https://loopkit.github.io/loopdocs/operation/algorithm/insulin-modeling/"
+    "https://loopkit.github.io/loopdocs/operation/algorithm/prediction/"
 
 /**
  * Fraction of a single dose (insulin or carbs) still active [minutesSinceDose]
@@ -414,7 +421,7 @@ private fun isActiveCarb(treatment: TreatmentEvent, last: GlucoseReading): Boole
  * (mg/dL per unit); each carb entry's absorbed fraction converts to an
  * expected glucose rise the same way, via a carb sensitivity factor derived
  * as `insulinSensitivityFactor / carbRatio` (there's no independently
- * measured carb sensitivity factor - see `Thresholds.carbRatio`). Every
+ * measured carb sensitivity factor - see `PatientPhysiology.carbRatio`). Every
  * treatment's contribution is computed independently and summed. See
  * android-app/README.md's "Where each value comes from" table for exactly
  * which field feeds which term.
@@ -438,11 +445,12 @@ class MultiBolusInsulinActivityPredictor : GlucosePredictor {
         readings: List<GlucoseReading>,
         thresholds: Thresholds,
         horizonMinutes: Int,
-        treatments: List<TreatmentEvent>
+        treatments: List<TreatmentEvent>,
+        physiology: PatientPhysiology
     ): PredictionResult {
         val last = readings.maxByOrNull { it.dateMs }
             ?: return PredictionResult(null, null, "No readings yet.")
-        if (thresholds.insulinSensitivityFactor <= 0.0) {
+        if (physiology.insulinSensitivityFactor <= 0.0) {
             return PredictionResult(last.sgv.toDouble(), null, "No insulin sensitivity factor set.")
         }
 
@@ -461,11 +469,11 @@ class MultiBolusInsulinActivityPredictor : GlucosePredictor {
                         INSULIN_DURATION_MINUTES,
                         INSULIN_PEAK_MINUTES
                     )
-            bolus.insulin!! * fractionUsedByHorizon * thresholds.insulinSensitivityFactor
+            bolus.insulin!! * fractionUsedByHorizon * physiology.insulinSensitivityFactor
         }
 
-        val carbSensitivityFactor = if (thresholds.carbRatio > 0.0) {
-            thresholds.insulinSensitivityFactor / thresholds.carbRatio
+        val carbSensitivityFactor = if (physiology.carbRatio > 0.0) {
+            physiology.insulinSensitivityFactor / physiology.carbRatio
         } else {
             0.0
         }

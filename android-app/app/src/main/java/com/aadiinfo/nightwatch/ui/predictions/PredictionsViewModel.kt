@@ -6,6 +6,7 @@ import com.aadiinfo.nightwatch.data.repository.PatientRepository
 import com.aadiinfo.nightwatch.domain.PredictionResult
 import com.aadiinfo.nightwatch.domain.availablePredictors
 import com.aadiinfo.nightwatch.domain.model.GlucoseReading
+import com.aadiinfo.nightwatch.domain.model.PatientPhysiology
 import com.aadiinfo.nightwatch.domain.model.Thresholds
 import com.aadiinfo.nightwatch.domain.model.TreatmentEvent
 import kotlinx.coroutines.flow.SharingStarted
@@ -40,8 +41,9 @@ class PredictionsViewModel(
     val uiState: StateFlow<PredictionsUiState> = combine(
         patientRepository.observeRecentReadings(patientId, RECENT_READINGS_LIMIT),
         patientRepository.observeThresholds(patientId, uid),
-        patientRepository.observeRecentTreatments(patientId, RECENT_TREATMENTS_LIMIT)
-    ) { recent, thresholds, treatments ->
+        patientRepository.observeRecentTreatments(patientId, RECENT_TREATMENTS_LIMIT),
+        patientRepository.observePatientPhysiology(patientId)
+    ) { recent, thresholds, treatments, physiology ->
         // Trimmed here against current time on every emission, not via the
         // query's own bound - see observeRecentReadings's doc comment; a
         // fixed date cutoff computed once would drift since this listener
@@ -53,7 +55,7 @@ class PredictionsViewModel(
                 predictor.name,
                 predictor.description,
                 predictor.sourceUrl,
-                predictor.predict(readings, thresholds, treatments = treatments)
+                predictor.predict(readings, thresholds, treatments = treatments, physiology = physiology)
             )
         }
         PredictionsUiState(
