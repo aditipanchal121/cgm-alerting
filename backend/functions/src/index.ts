@@ -81,6 +81,10 @@ async function pollOnePatient(patientId: string, patient: FirebaseFirestore.Docu
 
     const nowMs = Date.now();
     const latest = readings[readings.length - 1];
+    console.log(
+      `pollOnePatient(${patientId}): latest reading dateMs=${latest.dateMs} ` +
+        `(${new Date(latest.dateMs).toISOString()}, ${Math.round((nowMs - latest.dateMs) / 60000)} min old) sgv=${latest.sgv}`
+    );
 
     // Gluroo's devicestatus feed has occasionally reset IOB to exactly 0 from
     // a much higher value within a single 5-minute poll, which isn't
@@ -327,6 +331,40 @@ export const joinPatientAsFollower = onCall(async (request) => {
   // Same reasoning as claimIobSource's return value - confirms which
   // patient record was just joined rather than a bare "ok".
   return { ok: true, displayName: patientDoc.data()?.displayName ?? '' };
+});
+
+/** Self-service counterpart to joinPatientAsFollower - lets a follower undo
+ * a mistaken connection (e.g. the wrong Profile ID) without needing manual
+ * intervention. The owner can't leave their own patient this way - there'd
+ * be no owner left - so this only ever removes a follower. */
+export const leavePatient = onCall(async (request) => {
+  if (!request.auth) throw new HttpsError('unauthenticated', 'Sign in required.');
+  const { patientId } = (request.data ?? {}) as { patientId?: string };
+  if (!patientId) {
+    throw new HttpsError('invalid-argument', 'patientId is required.');
+  }
+
+  const patientRef = db().collection('patients').doc(patientId);
+  const patientDoc = await patientRef.get();
+  if (!patientDoc.exists) {
+    throw new HttpsError('not-found', 'No patient with that ID.');
+  }
+
+  const uid = request.auth.uid;
+  if (patientDoc.data()?.ownerUid === uid) {
+    throw new HttpsError('failed-precondition', 'The owner cannot leave their own patient record.');
+  }
+
+  await patientRef.update({ memberUids: admin.firestore.FieldValue.arrayRemove(uid) });
+  await patientRef.collection('members').doc(uid).delete();
+
+  // An ex-member's phone shouldn't remain trusted to report IOB for a
+  // patient they've just disconnected from.
+  if (patientDoc.data()?.iobSourceUid === uid) {
+    await patientRef.update({ iobSourceUid: admin.firestore.FieldValue.delete() });
+  }
+
+  return { ok: true };
 });
 
 /** Fires within seconds of the designated IOB source device writing a fresh

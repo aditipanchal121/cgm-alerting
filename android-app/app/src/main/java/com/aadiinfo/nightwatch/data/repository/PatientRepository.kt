@@ -53,13 +53,23 @@ class PatientRepository(
             .snapshotFlow()
             .map { snapshot -> snapshot.documents.firstOrNull()?.toGlucoseReading() }
 
-    fun observeReadingsSince(patientId: String, sinceMs: Long): Flow<List<GlucoseReading>> =
+    // A count limit, not a whereGreaterThanOrEqualTo(dateMs, sinceMs) range -
+    // a fixed sinceMs computed once at listener-attach time (which is now
+    // effectively "for the life of the app session", since these ViewModels
+    // use SharingStarted.Lazily) would never advance, so a "last 24 hours"
+    // query would silently accumulate more and more history the longer the
+    // session runs. limit(N), ordered newest-first, is self-bounding
+    // regardless of listener age - old readings fall out of the top N on
+    // their own as new ones arrive. Callers trim to their actual desired
+    // time window client-side (cheap, and reactive to current time on every
+    // emission) rather than relying on this query's bound for that.
+    fun observeRecentReadings(patientId: String, limit: Long): Flow<List<GlucoseReading>> =
         firestore.collection("patients").document(patientId)
             .collection("readings")
-            .whereGreaterThanOrEqualTo("dateMs", sinceMs)
-            .orderBy("dateMs", com.google.firebase.firestore.Query.Direction.ASCENDING)
+            .orderBy("dateMs", com.google.firebase.firestore.Query.Direction.DESCENDING)
+            .limit(limit)
             .snapshotFlow()
-            .map { snapshot -> snapshot.documents.mapNotNull { it.toGlucoseReading() } }
+            .map { snapshot -> snapshot.documents.mapNotNull { it.toGlucoseReading() }.asReversed() }
 
     // Personal to each member (evaluated against their own thresholds - see
     // pollOnePatient in the backend), not a shared patient-wide log. No
@@ -110,6 +120,16 @@ class PatientRepository(
         @Suppress("UNCHECKED_CAST")
         val data = result.data as? Map<String, Any?> ?: emptyMap()
         return data["displayName"] as? String ?: ""
+    }
+
+    /** Self-service counterpart to joinPatientAsFollower - undoes a mistaken
+     * connection (e.g. the wrong Profile ID) without needing manual
+     * intervention. Only ever removes a follower - the backend rejects this
+     * for the owner's own patient. */
+    suspend fun leavePatient(patientId: String) {
+        functions.getHttpsCallable("leavePatient")
+            .call(mapOf("patientId" to patientId))
+            .await()
     }
 
     suspend fun saveThresholds(patientId: String, uid: String, thresholds: Thresholds) {

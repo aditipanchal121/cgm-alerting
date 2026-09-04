@@ -1,6 +1,8 @@
 package com.aadiinfo.nightwatch.ui.connect
 
 import android.content.Intent
+import android.net.Uri
+import android.os.PowerManager
 import android.provider.Settings
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -80,12 +82,22 @@ fun ConnectToPatientScreen(patientRepository: PatientRepository, onBack: () -> U
     var notificationAccessGranted by remember {
         mutableStateOf(NotificationManagerCompat.getEnabledListenerPackages(context).contains(context.packageName))
     }
+    // Battery optimization can silently kill OmnipodIobListenerService's
+    // background NotificationListenerService - unlike notification access,
+    // this one specific system dialog can be triggered directly instead of
+    // just linking to a settings screen (see the button below).
+    val powerManager = remember { context.getSystemService(PowerManager::class.java) }
+    var batteryOptimizationExempt by remember {
+        mutableStateOf(powerManager?.isIgnoringBatteryOptimizations(context.packageName) ?: true)
+    }
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
                 notificationAccessGranted =
                     NotificationManagerCompat.getEnabledListenerPackages(context).contains(context.packageName)
+                batteryOptimizationExempt =
+                    powerManager?.isIgnoringBatteryOptimizations(context.packageName) ?: true
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -183,6 +195,41 @@ fun ConnectToPatientScreen(patientRepository: PatientRepository, onBack: () -> U
             Text(
                 "Find Vigil in the list and turn it on - Android only allows " +
                     "granting this from system Settings, not from within the app.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
+        // Not nested under alsoReportIob - this matters for every phone using
+        // the app, not just the one reporting IOB. Without it, Android can
+        // defer this phone's Firestore sync / FCM delivery while backgrounded,
+        // so the Dashboard can sit stale for a while even though the backend
+        // itself is polling and pushing on schedule the entire time.
+        Spacer(Modifier.height(16.dp))
+        Text(
+            if (batteryOptimizationExempt) "Battery optimization: exempted" else "Battery optimization: not exempted",
+            style = MaterialTheme.typography.bodyMedium,
+            color = if (batteryOptimizationExempt) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
+        )
+        Spacer(Modifier.height(8.dp))
+        if (!batteryOptimizationExempt) {
+            OutlinedButton(
+                onClick = {
+                    context.startActivity(
+                        Intent(
+                            Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                            Uri.parse("package:${context.packageName}")
+                        )
+                    )
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Allow running in background")
+            }
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "Without this, Android can delay updates to this phone's " +
+                    "Dashboard and notifications while it's in the background.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

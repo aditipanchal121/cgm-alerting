@@ -14,6 +14,9 @@ class HistoryViewModel(
     uid: String
 ) : ViewModel() {
 
+    // Lazily, not WhileSubscribed - see DashboardViewModel's comment. Same
+    // mechanism here: a fresh listener on the full alert history every time
+    // the History tab is revisited, instead of once per app session.
     val alerts: StateFlow<List<AlertEvent>> = patientRepository.observeAlertHistory(patientId, uid)
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+        .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 }

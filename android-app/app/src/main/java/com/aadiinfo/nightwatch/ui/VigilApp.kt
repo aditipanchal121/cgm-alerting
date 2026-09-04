@@ -18,7 +18,9 @@ import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Insights
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Sync
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -38,6 +40,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -65,6 +68,7 @@ import com.aadiinfo.nightwatch.ui.theme.VigilTheme
 import com.google.firebase.Firebase
 import com.google.firebase.crashlytics.crashlytics
 import com.google.firebase.messaging.messaging
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 
 @Composable
@@ -306,6 +310,12 @@ private fun MainScreen(
                                 ) {
                                     Text("Edit Gluroo connection")
                                 }
+                            } else {
+                                // The owner can't leave their own patient (no one
+                                // would be left to own it) - this is only ever
+                                // reachable for a follower, e.g. undoing a
+                                // mistaken connection to the wrong Profile ID.
+                                LeavePatientButton(patientRepository, patient.id, patient.displayName)
                             }
                             Box(modifier = Modifier.weight(1f)) {
                                 AlertSettingsScreen(patientRepository, patient.id, uid)
@@ -323,6 +333,71 @@ private fun MainScreen(
     }
 }
 
+/** Self-service counterpart to the Connect screen's join flow - lets a
+ * follower undo a mistaken connection without needing it fixed by hand.
+ * Confirms first since this is a real access change, not just a display
+ * preference: leaving means re-entering the Profile ID to reconnect. */
+@Composable
+private fun LeavePatientButton(patientRepository: PatientRepository, patientId: String, patientDisplayName: String) {
+    var showConfirm by remember { mutableStateOf(false) }
+    var leaving by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+
+    Column(modifier = Modifier.padding(24.dp, 16.dp, 24.dp, 0.dp)) {
+        OutlinedButton(
+            onClick = { showConfirm = true },
+            enabled = !leaving,
+            colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text(if (leaving) "Leaving..." else "Stop following $patientDisplayName")
+        }
+        error?.let {
+            Spacer(Modifier.height(8.dp))
+            Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+        }
+    }
+
+    if (showConfirm) {
+        AlertDialog(
+            onDismissRequest = { showConfirm = false },
+            title = { Text("Stop following $patientDisplayName?") },
+            text = {
+                Text(
+                    "You'll lose access to their Dashboard, History, and alerts. " +
+                        "You'd need the Profile ID again to reconnect."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showConfirm = false
+                    leaving = true
+                    error = null
+                    scope.launch {
+                        runCatching { patientRepository.leavePatient(patientId) }
+                            .onFailure {
+                                leaving = false
+                                error = it.message ?: "Could not leave - try again."
+                            }
+                        // On success, deliberately left leaving=true and no
+                        // further state change here - patientsForUser's live
+                        // listener drops this patient from the list on its
+                        // own, which re-renders this whole screen away.
+                    }
+                }) {
+                    Text("Stop following", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showConfirm = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+}
+
 /** Surfaces the one identifier every self-service flow in this app (joining
  * as a follower, claiming IOB source) runs on, so a member actually has
  * somewhere to find it before texting it to whoever they want to grant
@@ -335,9 +410,8 @@ private fun PatientIdShareSection(patientId: String, patientDisplayName: String)
     Column(modifier = Modifier.fillMaxWidth().padding(24.dp, 24.dp, 24.dp, 0.dp)) {
         Text("Profile ID (for $patientDisplayName)", style = MaterialTheme.typography.titleSmall)
         Text(
-            "This identifies $patientDisplayName's profile specifically - not " +
-                "you, and not whoever you're about to send it to. Share it with " +
-                "a family member's phone so they can follow $patientDisplayName, " +
+            "This identifies $patientDisplayName's profile specifically. Share it " +
+                "with a family member's phone so they can follow $patientDisplayName, " +
                 "or so a phone reporting IOB from $patientDisplayName's pump app " +
                 "can be pointed at it.",
             style = MaterialTheme.typography.bodySmall,

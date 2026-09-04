@@ -36,6 +36,9 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -110,7 +113,11 @@ private fun GlucoseTrendChart(readings: List<GlucoseReading>, thresholds: Thresh
     val oldestMs = readings.first().dateMs
     val newestMs = readings.last().dateMs
     val fullSpanMs = (newestMs - oldestMs).coerceAtLeast(1L).toFloat()
-    val timeFormat = remember { SimpleDateFormat("h:mm a", Locale.getDefault()) }
+    // Includes the date, not just the time - a 24h window almost always
+    // spans two calendar days, and a bare time on the left edge (e.g.
+    // "6:19 PM") reads as if it's from today, making the graph look like it
+    // runs backwards once you realize it's actually yesterday's.
+    val timeFormat = remember { SimpleDateFormat("M/d, h:mm a", Locale.getDefault()) }
 
     // Pinch-to-zoom window, kept independent of `readings`' identity so a
     // poll cycle refreshing the data doesn't snap an inspected zoom back to
@@ -321,12 +328,35 @@ private fun GlucoseTrendChart(readings: List<GlucoseReading>, thresholds: Thresh
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(start = 40.dp),
-            horizontalArrangement = Arrangement.SpaceBetween
+                .padding(start = 40.dp)
         ) {
-            Text(timeFormat.format(Date(windowStartMs)), style = MaterialTheme.typography.labelSmall)
-            Text(timeFormat.format(Date((windowStartMs + windowEndMs) / 2)), style = MaterialTheme.typography.labelSmall)
-            Text(timeFormat.format(Date(windowEndMs)), style = MaterialTheme.typography.labelSmall)
+            // Single-line + ellipsis, not wrapping - these three now carry a
+            // date too (see timeFormat above), and a wrapped second line here
+            // would push the row below it down, the same class of layout
+            // shift already fixed for the graph area itself.
+            Text(
+                timeFormat.format(Date(windowStartMs)),
+                style = MaterialTheme.typography.labelSmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
+            Text(
+                timeFormat.format(Date((windowStartMs + windowEndMs) / 2)),
+                style = MaterialTheme.typography.labelSmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.weight(1f)
+            )
+            Text(
+                timeFormat.format(Date(windowEndMs)),
+                style = MaterialTheme.typography.labelSmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.End,
+                modifier = Modifier.weight(1f)
+            )
         }
 
         Spacer(Modifier.height(4.dp))
@@ -378,22 +408,18 @@ private fun ReadingCard(reading: GlucoseReading, thresholds: Thresholds) {
     }
     Text("mg/dL", style = MaterialTheme.typography.bodyMedium)
 
+    // Above "Updated" and visually heavier than plain body text - prominent
+    // enough to read at a glance, but clearly secondary to the glucose
+    // number/arrow above (72sp/40sp) rather than competing with it.
     Spacer(Modifier.height(16.dp))
-    Text(
-        if (ageMinutes <= 1) "Updated just now" else "Updated $ageMinutes min ago",
-        style = MaterialTheme.typography.bodyMedium,
-        color = if (ageMinutes >= thresholds.staleMinutes) MaterialTheme.colorScheme.error
-        else MaterialTheme.colorScheme.onSurfaceVariant
-    )
-
-    Spacer(Modifier.height(8.dp))
     val iob = reading.iob
     if (iob != null) {
         Text(
             "IOB: ${"%.2f".format(iob)}u",
-            style = MaterialTheme.typography.bodyMedium,
+            fontSize = 28.sp,
+            fontWeight = FontWeight.SemiBold,
             color = if (iob >= thresholds.iobThreshold) MaterialTheme.colorScheme.error
-            else MaterialTheme.colorScheme.onSurfaceVariant
+            else MaterialTheme.colorScheme.onSurface
         )
         if (reading.iobUnreliable) {
             Text(
@@ -412,10 +438,19 @@ private fun ReadingCard(reading: GlucoseReading, thresholds: Thresholds) {
         // here can't tell "not tracked" from "screen forgot to load."
         Text(
             "IOB not available",
-            style = MaterialTheme.typography.bodyMedium,
+            fontSize = 28.sp,
+            fontWeight = FontWeight.SemiBold,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
     }
+
+    Spacer(Modifier.height(16.dp))
+    Text(
+        if (ageMinutes <= 1) "Updated just now" else "Updated $ageMinutes min ago",
+        style = MaterialTheme.typography.bodyMedium,
+        color = if (ageMinutes >= thresholds.staleMinutes) MaterialTheme.colorScheme.error
+        else MaterialTheme.colorScheme.onSurfaceVariant
+    )
 
     Spacer(Modifier.height(24.dp))
     Text(

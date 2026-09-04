@@ -32,9 +32,15 @@ class PredictionsViewModel(
 ) : ViewModel() {
 
     val uiState: StateFlow<PredictionsUiState> = combine(
-        patientRepository.observeReadingsSince(patientId, System.currentTimeMillis() - RECENT_WINDOW_MS),
+        patientRepository.observeRecentReadings(patientId, RECENT_READINGS_LIMIT),
         patientRepository.observeThresholds(patientId, uid)
-    ) { readings, thresholds ->
+    ) { recent, thresholds ->
+        // Trimmed here against current time on every emission, not via the
+        // query's own bound - see observeRecentReadings's doc comment; a
+        // fixed date cutoff computed once would drift since this listener
+        // now lives for the whole app session (SharingStarted.Lazily).
+        val cutoffMs = System.currentTimeMillis() - RECENT_WINDOW_MS
+        val readings = recent.filter { it.dateMs >= cutoffMs }
         val outputs = availablePredictors.map { predictor ->
             PredictorOutput(predictor.name, predictor.description, predictor.predict(readings, thresholds))
         }
@@ -44,7 +50,8 @@ class PredictionsViewModel(
             outputs = outputs,
             loading = false
         )
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), PredictionsUiState())
+    // Lazily, not WhileSubscribed - see DashboardViewModel's comment.
+    }.stateIn(viewModelScope, SharingStarted.Lazily, PredictionsUiState())
 
     private companion object {
         // Matches the backend's own PREDICTED_LOW window (alertEngine.ts calls
@@ -60,5 +67,9 @@ class PredictionsViewModel(
         // as of whenever it fired; this tab is always live) explains any
         // remaining disagreement.
         const val RECENT_WINDOW_MS = 30 * 60 * 1000L
+
+        // ~6 readings in 30 min at the usual 5-minute cadence - comfortable
+        // buffer over that, self-bounding regardless of listener age.
+        const val RECENT_READINGS_LIMIT = 12L
     }
 }

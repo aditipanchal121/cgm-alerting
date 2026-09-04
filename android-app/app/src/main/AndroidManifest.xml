@@ -5,6 +5,14 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- Lets the reporting phone's ConnectToPatientScreen fire
+         ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS - without this exemption
+         the OS can silently kill OmnipodIobListenerService's background
+         NotificationListenerService, stopping IOB reporting with no error.
+         A "special" permission Google Play would want justification for on
+         a store listing; irrelevant here since this app is sideloaded, not
+         Play-distributed. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <application
         android:name=".VigilApplication"
