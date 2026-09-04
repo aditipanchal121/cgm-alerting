@@ -61,9 +61,9 @@ private val PREDICTOR_COLORS = listOf(
 )
 
 @Composable
-fun PredictionsScreen(patientRepository: PatientRepository, patientId: String) {
+fun PredictionsScreen(patientRepository: PatientRepository, patientId: String, uid: String) {
     val viewModel: PredictionsViewModel =
-        viewModel(factory = vmFactory { PredictionsViewModel(patientRepository, patientId) })
+        viewModel(factory = vmFactory { PredictionsViewModel(patientRepository, patientId, uid) })
     val state by viewModel.uiState.collectAsState()
 
     // LazyColumn rather than a plain Column+verticalScroll: it's the same

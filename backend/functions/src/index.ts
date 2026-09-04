@@ -121,24 +121,45 @@ async function pollOnePatient(patientId: string, patient: FirebaseFirestore.Docu
     // current, separate from the low/high/predictive alert notifications.
     await sendReadingStatusPush(patientId, patient.displayName ?? 'Vigil', latest);
 
-    const thresholdsDoc = await db()
-      .collection('patients')
-      .doc(patientId)
-      .collection('thresholds')
-      .doc('current')
-      .get();
-    const thresholds: Thresholds = { ...DEFAULT_THRESHOLDS, ...(thresholdsDoc.data() ?? {}) };
+    // Alerts are evaluated per member, not once for the whole patient - each
+    // family member sets their own alarm/alert thresholds (see
+    // patients/{id}/members/{uid}/thresholds), so the same reading can cross
+    // one person's limits and not another's. eventsByUid feeds
+    // updatePairedDevices below, so each paired ESP32 alarm buzzes according
+    // to whichever member paired it, not some shared/blended threshold.
+    const membersSnap = await db().collection('patients').doc(patientId).collection('members').get();
+    const eventsByUid = new Map<string, AlertEvent[]>();
 
-    const events = evaluateAlerts(readings, thresholds, nowMs);
+    for (const memberDoc of membersSnap.docs) {
+      const uid = memberDoc.id;
+      const thresholdsDoc = await db()
+        .collection('patients')
+        .doc(patientId)
+        .collection('members')
+        .doc(uid)
+        .collection('thresholds')
+        .doc('current')
+        .get();
+      const thresholds: Thresholds = { ...DEFAULT_THRESHOLDS, ...(thresholdsDoc.data() ?? {}) };
 
-    for (const event of events) {
-      await db().collection('patients').doc(patientId).collection('alerts').add(event);
-      if (event.severity !== 'INFO') {
-        await sendAlertPush(patientId, patient.displayName ?? 'Vigil', event);
+      const events = evaluateAlerts(readings, thresholds, nowMs);
+      eventsByUid.set(uid, events);
+
+      for (const event of events) {
+        await db()
+          .collection('patients')
+          .doc(patientId)
+          .collection('members')
+          .doc(uid)
+          .collection('alerts')
+          .add(event);
+        if (event.severity !== 'INFO') {
+          await sendAlertPush(uid, patientId, patient.displayName ?? 'Vigil', event);
+        }
       }
     }
 
-    await updatePairedDevices(patientId, events, nowMs);
+    await updatePairedDevices(patientId, eventsByUid, nowMs);
   } catch (err) {
     console.error(`pollGlucose failed for patient ${patientId}`, err);
   }
@@ -146,21 +167,30 @@ async function pollOnePatient(patientId: string, patient: FirebaseFirestore.Docu
 
 async function updatePairedDevices(
   patientId: string,
-  events: AlertEvent[],
+  eventsByUid: Map<string, AlertEvent[]>,
   nowMs: number
 ): Promise<void> {
   const devicesSnap = await db().collection('devices').where('patientId', '==', patientId).get();
   if (devicesSnap.empty) return;
 
-  const worst = [...events].sort((a, b) => severityRank(b.severity) - severityRank(a.severity))[0];
   // Bucketing the id by a 10-minute window means an unresolved alert
   // re-triggers the ESP32's buzz periodically instead of every single poll.
   const bucket = Math.floor(nowMs / (10 * 60 * 1000));
-  const payload = worst
-    ? { severity: worst.severity, alertId: `${worst.type}-${bucket}`, message: worst.message, timestamp: nowMs }
-    : { severity: 'NONE', alertId: `clear-${bucket}`, message: '', timestamp: nowMs };
 
-  await Promise.all(devicesSnap.docs.map((d) => rtdb().ref(`devices/${d.id}/alert`).set(payload)));
+  await Promise.all(
+    devicesSnap.docs.map((d) => {
+      // Driven by whichever member paired this specific device, so it buzzes
+      // according to that person's own thresholds - not some shared/blended
+      // set, and not silently empty if pairedBy isn't in eventsByUid (e.g. a
+      // member removed after pairing).
+      const events = eventsByUid.get(d.data().pairedBy) ?? [];
+      const worst = [...events].sort((a, b) => severityRank(b.severity) - severityRank(a.severity))[0];
+      const payload = worst
+        ? { severity: worst.severity, alertId: `${worst.type}-${bucket}`, message: worst.message, timestamp: nowMs }
+        : { severity: 'NONE', alertId: `clear-${bucket}`, message: '', timestamp: nowMs };
+      return rtdb().ref(`devices/${d.id}/alert`).set(payload);
+    })
+  );
 }
 
 function severityRank(s: string): number {
@@ -322,8 +352,23 @@ export const pairMcuDevice = onCall(async (request) => {
   }
 
   const patientDoc = await db().collection('patients').doc(patientId).get();
-  if (!patientDoc.exists || patientDoc.data()?.ownerUid !== request.auth.uid) {
-    throw new HttpsError('permission-denied', 'Only the patient owner can pair a device.');
+  if (!patientDoc.exists) {
+    throw new HttpsError('not-found', 'No patient with that ID.');
+  }
+  // Any member can pair a device, not just the owner - pairing an ESP32 is a
+  // personal action (it's whoever's physical alarm clock this is), same
+  // reasoning as alert thresholds being personal rather than owner-only:
+  // updatePairedDevices drives each device off its own pairedBy member's
+  // thresholds, so a follower's alarm in their own room should reflect their
+  // own settings, not require the owner to have set it up for them.
+  const memberDoc = await db()
+    .collection('patients')
+    .doc(patientId)
+    .collection('members')
+    .doc(request.auth.uid)
+    .get();
+  if (!memberDoc.exists) {
+    throw new HttpsError('permission-denied', 'Only a member of this patient can pair a device.');
   }
 
   const nowMs = Date.now();

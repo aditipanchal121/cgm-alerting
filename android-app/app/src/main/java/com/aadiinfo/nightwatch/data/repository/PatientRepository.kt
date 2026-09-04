@@ -35,8 +35,12 @@ class PatientRepository(
             .snapshotFlow()
             .map { it?.toPatient() }
 
-    fun observeThresholds(patientId: String): Flow<Thresholds> =
+    // Personal to each member, not shared per patient - each family member
+    // sets their own alarm/alert thresholds and display range (see the
+    // conversation that moved this from patients/{id}/thresholds/current).
+    fun observeThresholds(patientId: String, uid: String): Flow<Thresholds> =
         firestore.collection("patients").document(patientId)
+            .collection("members").document(uid)
             .collection("thresholds").document("current")
             .snapshotFlow()
             .map { it?.toThresholds() ?: Thresholds() }
@@ -57,11 +61,14 @@ class PatientRepository(
             .snapshotFlow()
             .map { snapshot -> snapshot.documents.mapNotNull { it.toGlucoseReading() } }
 
-    // No count limit - cleanupOldAlerts (backend/README.md) already prunes
+    // Personal to each member (evaluated against their own thresholds - see
+    // pollOnePatient in the backend), not a shared patient-wide log. No
+    // count limit - cleanupOldAlerts (backend/README.md) already prunes
     // anything older than 3 days server-side, so the collection itself is
     // the bound.
-    fun observeAlertHistory(patientId: String): Flow<List<AlertEvent>> =
+    fun observeAlertHistory(patientId: String, uid: String): Flow<List<AlertEvent>> =
         firestore.collection("patients").document(patientId)
+            .collection("members").document(uid)
             .collection("alerts")
             .orderBy("timestamp", com.google.firebase.firestore.Query.Direction.DESCENDING)
             .snapshotFlow()
@@ -105,8 +112,9 @@ class PatientRepository(
         return data["displayName"] as? String ?: ""
     }
 
-    suspend fun saveThresholds(patientId: String, thresholds: Thresholds) {
+    suspend fun saveThresholds(patientId: String, uid: String, thresholds: Thresholds) {
         firestore.collection("patients").document(patientId)
+            .collection("members").document(uid)
             .collection("thresholds").document("current")
             .set(thresholds.toMap())
             .await()

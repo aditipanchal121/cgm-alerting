@@ -33,14 +33,14 @@ import java.util.Locale
  * triaged/cleared. Grouped by day since 3 days' worth in one flat list
  * makes it hard to tell where one day ends and the next begins. */
 @Composable
-fun HistoryScreen(patientRepository: PatientRepository, patientId: String) {
+fun HistoryScreen(patientRepository: PatientRepository, patientId: String, uid: String) {
     val viewModel: HistoryViewModel =
-        viewModel(factory = vmFactory { HistoryViewModel(patientRepository, patientId) })
+        viewModel(factory = vmFactory { HistoryViewModel(patientRepository, patientId, uid) })
     val alerts by viewModel.alerts.collectAsState()
 
     if (alerts.isEmpty()) {
         Text(
-            "No alerts yet.",
+            "No alerts yet - based on your own alert thresholds (Settings tab).",
             modifier = Modifier.fillMaxSize().padding(24.dp)
         )
         return

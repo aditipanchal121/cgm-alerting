@@ -26,24 +26,11 @@ service cloud.firestore {
       allow create: if isSignedIn() && request.resource.data.ownerUid == request.auth.uid;
       allow update, delete: if isOwner(patientId);
 
-      // Alert thresholds: family can see them, only the owner can change them.
-      match /thresholds/{doc} {
-        allow read: if isMember(patientId);
-        allow write: if isOwner(patientId);
-      }
-
       // Glucose/IOB history: written only by Cloud Functions via the Admin SDK,
       // which bypasses these rules entirely - clients never write readings directly.
       match /readings/{doc} {
         allow read: if isMember(patientId);
         allow write: if false;
-      }
-
-      // Alert event log: written only by Cloud Functions, read-only to
-      // members - no acknowledge step, so no client writes at all.
-      match /alerts/{doc} {
-        allow read: if isMember(patientId);
-        allow create, update, delete: if false;
       }
 
       // Directly-reported IOB (e.g. a paired phone's NotificationListenerService
@@ -82,6 +69,25 @@ service cloud.firestore {
           || isOwner(patientId)
         );
         allow update, delete: if isOwner(patientId);
+
+        // Personal alert thresholds - each member sets their own alarm
+        // trigger points and display preferences. Private even from the
+        // owner: these aren't shared family config, they're one person's
+        // own alert settings, same as nobody else configures your phone's
+        // notification settings for you.
+        match /thresholds/{doc} {
+          allow read, write: if isSignedIn() && request.auth.uid == uid;
+        }
+
+        // Personal alert history - each entry was generated against this
+        // member's own thresholds, so it means something different per
+        // person and is private to them the same way. Written only by
+        // Cloud Functions (Admin SDK bypasses these rules); no client
+        // writes, no acknowledge step.
+        match /alerts/{doc} {
+          allow read: if isSignedIn() && request.auth.uid == uid;
+          allow create, update, delete: if false;
+        }
       }
     }
 

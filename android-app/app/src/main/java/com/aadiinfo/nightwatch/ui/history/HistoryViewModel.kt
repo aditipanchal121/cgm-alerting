@@ -9,10 +9,11 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
 
 class HistoryViewModel(
-    private val patientRepository: PatientRepository,
-    private val patientId: String
+    patientRepository: PatientRepository,
+    patientId: String,
+    uid: String
 ) : ViewModel() {
 
-    val alerts: StateFlow<List<AlertEvent>> = patientRepository.observeAlertHistory(patientId)
+    val alerts: StateFlow<List<AlertEvent>> = patientRepository.observeAlertHistory(patientId, uid)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 }

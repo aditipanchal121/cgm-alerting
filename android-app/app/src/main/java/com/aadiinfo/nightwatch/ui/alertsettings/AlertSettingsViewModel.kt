@@ -27,7 +27,8 @@ data class AlertSettingsUiState(
 
 class AlertSettingsViewModel(
     private val patientRepository: PatientRepository,
-    private val patientId: String
+    private val patientId: String,
+    private val uid: String
 ) : ViewModel() {
 
     var uiState by mutableStateOf(AlertSettingsUiState())
@@ -38,7 +39,7 @@ class AlertSettingsViewModel(
 
     init {
         viewModelScope.launch {
-            patientRepository.observeThresholds(patientId).collect { t ->
+            patientRepository.observeThresholds(patientId, uid).collect { t ->
                 loadedTimezone = t.timezone
                 loadedUnits = t.units
                 uiState = uiState.copy(
@@ -83,7 +84,7 @@ class AlertSettingsViewModel(
 
         uiState = uiState.copy(saving = true, error = null)
         viewModelScope.launch {
-            runCatching { patientRepository.saveThresholds(patientId, thresholds) }
+            runCatching { patientRepository.saveThresholds(patientId, uid, thresholds) }
                 .onSuccess { uiState = uiState.copy(saving = false, saved = true) }
                 .onFailure { uiState = uiState.copy(saving = false, error = it.message) }
         }

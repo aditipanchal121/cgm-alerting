@@ -8,30 +8,18 @@ import * as admin from 'firebase-admin';
 export const ALERT_RETENTION_MS = 3 * 24 * 60 * 60 * 1000;
 
 /** Deletes alert documents older than the retention window, across every
- * patient. Returns the number of documents deleted (for logging). */
+ * patient and every member's personal alert history. A collection-group
+ * query matches "alerts" subcollections at any nesting depth (patients/{id}
+ * /members/{uid}/alerts), so this doesn't need to enumerate patients or
+ * members itself. Returns the number of documents deleted (for logging). */
 export async function deleteOldAlerts(db: admin.firestore.Firestore): Promise<number> {
   const cutoffMs = Date.now() - ALERT_RETENTION_MS;
-  const patientsSnap = await db.collection('patients').get();
+  const oldAlertsSnap = await db.collectionGroup('alerts').where('timestamp', '<', cutoffMs).get();
 
   const bulkWriter = db.bulkWriter();
-  let deletedCount = 0;
-
-  for (const patientDoc of patientsSnap.docs) {
-    const oldAlertsSnap = await db
-      .collection('patients')
-      .doc(patientDoc.id)
-      .collection('alerts')
-      .where('timestamp', '<', cutoffMs)
-      .get();
-
-    oldAlertsSnap.docs.forEach((doc) => {
-      bulkWriter.delete(doc.ref);
-      deletedCount++;
-    });
-  }
-
+  oldAlertsSnap.docs.forEach((doc) => bulkWriter.delete(doc.ref));
   await bulkWriter.close();
-  return deletedCount;
+  return oldAlertsSnap.size;
 }
 
 /** How long glucose readings are kept before being deleted. Deliberately much

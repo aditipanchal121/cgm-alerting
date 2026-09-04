@@ -161,6 +161,7 @@ fun VigilApp(
                     MainScreen(
                         patientRepository = patientRepository,
                         patient = patient,
+                        uid = uid,
                         isOwner = patient.ownerUid == uid,
                         onSignOut = authRepository::signOut,
                         onShowConnect = { showConnect = true }
@@ -191,12 +192,21 @@ private enum class Tab(val label: String) {
 private fun MainScreen(
     patientRepository: PatientRepository,
     patient: Patient,
+    uid: String,
     isOwner: Boolean,
     onSignOut: () -> Unit,
     onShowConnect: () -> Unit
 ) {
     var tab by remember { mutableStateOf(Tab.DASHBOARD) }
-    val tabs = if (isOwner) Tab.entries else listOf(Tab.DASHBOARD, Tab.HISTORY, Tab.PREDICTIONS)
+    // Shown to everyone regardless of role - alert thresholds are personal to
+    // each member now, and the two remaining owner-only actions (edit Gluroo
+    // connection, pair an alarm device) each gate themselves internally with
+    // their own "Only the owner can..." fallback. Hiding the tabs entirely
+    // for followers used to also hide those fallbacks, along with read-only
+    // content every member
+    // should be able to reach - the Profile ID share section in particular,
+    // which a follower needs in order to pass it on to another family member.
+    val tabs = Tab.entries
 
     Scaffold(
         topBar = {
@@ -244,9 +254,9 @@ private fun MainScreen(
     ) { padding ->
         Box(modifier = Modifier.fillMaxSize().padding(padding)) {
             when (tab) {
-                Tab.DASHBOARD -> DashboardScreen(patientRepository, patient.id)
-                Tab.HISTORY -> HistoryScreen(patientRepository, patient.id)
-                Tab.PREDICTIONS -> PredictionsScreen(patientRepository, patient.id)
+                Tab.DASHBOARD -> DashboardScreen(patientRepository, patient.id, uid)
+                Tab.HISTORY -> HistoryScreen(patientRepository, patient.id, uid)
+                Tab.PREDICTIONS -> PredictionsScreen(patientRepository, patient.id, uid)
                 Tab.SETTINGS -> {
                     var editingConnection by remember { mutableStateOf(false) }
                     if (editingConnection) {
@@ -266,20 +276,18 @@ private fun MainScreen(
                                 ) {
                                     Text("Edit Gluroo connection")
                                 }
-                                Box(modifier = Modifier.weight(1f)) {
-                                    AlertSettingsScreen(patientRepository, patient.id)
-                                }
-                            } else {
-                                Text("Only the owner can edit thresholds", modifier = Modifier.padding(24.dp, 16.dp))
+                            }
+                            Box(modifier = Modifier.weight(1f)) {
+                                AlertSettingsScreen(patientRepository, patient.id, uid)
                             }
                         }
                     }
                 }
-                Tab.PAIR_DEVICE -> if (isOwner) {
-                    McuPairingScreen(patientRepository, patient.id)
-                } else {
-                    Text("Only the owner can pair an alarm device", modifier = Modifier.padding(24.dp))
-                }
+                // Any member can pair their own alarm device now, not just the
+                // owner - see pairMcuDevice: each device buzzes off the alert
+                // thresholds of whoever paired it, so this needs to be
+                // reachable by whoever actually owns that physical ESP32.
+                Tab.PAIR_DEVICE -> McuPairingScreen(patientRepository, patient.id)
             }
         }
     }

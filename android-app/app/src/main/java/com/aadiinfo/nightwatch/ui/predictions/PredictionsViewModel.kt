@@ -27,12 +27,13 @@ data class PredictionsUiState(
  * not feed alerting (the backend's own predictor does that independently). */
 class PredictionsViewModel(
     patientRepository: PatientRepository,
-    patientId: String
+    patientId: String,
+    uid: String
 ) : ViewModel() {
 
     val uiState: StateFlow<PredictionsUiState> = combine(
         patientRepository.observeReadingsSince(patientId, System.currentTimeMillis() - RECENT_WINDOW_MS),
-        patientRepository.observeThresholds(patientId)
+        patientRepository.observeThresholds(patientId, uid)
     ) { readings, thresholds ->
         val outputs = availablePredictors.map { predictor ->
             PredictorOutput(predictor.name, predictor.description, predictor.predict(readings, thresholds))

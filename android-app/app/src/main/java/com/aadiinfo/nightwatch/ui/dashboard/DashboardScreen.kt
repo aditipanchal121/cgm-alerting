@@ -52,9 +52,9 @@ import kotlin.math.min
 import kotlin.math.roundToInt
 
 @Composable
-fun DashboardScreen(patientRepository: PatientRepository, patientId: String) {
+fun DashboardScreen(patientRepository: PatientRepository, patientId: String, uid: String) {
     val viewModel: DashboardViewModel =
-        viewModel(factory = vmFactory { DashboardViewModel(patientRepository, patientId) })
+        viewModel(factory = vmFactory { DashboardViewModel(patientRepository, patientId, uid) })
     val state by viewModel.uiState.collectAsState()
 
     Column(

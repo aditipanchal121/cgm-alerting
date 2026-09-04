@@ -21,13 +21,14 @@ data class DashboardUiState(
 
 class DashboardViewModel(
     patientRepository: PatientRepository,
-    patientId: String
+    patientId: String,
+    uid: String
 ) : ViewModel() {
 
     val uiState: StateFlow<DashboardUiState> = combine(
         patientRepository.observePatient(patientId),
         patientRepository.observeLatestReading(patientId),
-        patientRepository.observeThresholds(patientId),
+        patientRepository.observeThresholds(patientId, uid),
         patientRepository.observeReadingsSince(patientId, System.currentTimeMillis() - 24 * 60 * 60 * 1000)
     ) { patient, reading, thresholds, trend ->
         DashboardUiState(patient = patient, reading = reading, thresholds = thresholds, trend = trend, loading = false)

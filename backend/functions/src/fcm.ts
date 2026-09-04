@@ -19,6 +19,11 @@ async function getMemberTokens(patientId: string): Promise<string[]> {
   return tokens;
 }
 
+async function getTokensForUid(uid: string): Promise<string[]> {
+  const tokensSnap = await admin.firestore().collection('users').doc(uid).collection('fcmTokens').get();
+  return tokensSnap.docs.map((t) => t.id);
+}
+
 /** Logs sendEachForMulticast's per-token result - it never throws on a
  * rejected token (e.g. one invalidated by a reinstall), so without this a
  * push can silently fail to reach anyone while the calling function still
@@ -32,13 +37,17 @@ function logMulticastResult(label: string, response: admin.messaging.BatchRespon
   });
 }
 
-/** Pushes an alert to every member (owner + followers) of a patient. */
+/** Pushes an alert to one specific member - each member's alerts are
+ * evaluated against their own personal thresholds now (see pollOnePatient),
+ * so the same reading can cross one person's limits and not another's;
+ * this only ever reaches the one person it was actually generated for. */
 export async function sendAlertPush(
+  uid: string,
   patientId: string,
   displayName: string,
   event: AlertEvent
 ): Promise<void> {
-  const tokens = await getMemberTokens(patientId);
+  const tokens = await getTokensForUid(uid);
   if (!tokens.length) return;
 
   const isCritical = event.severity === 'CRITICAL';
@@ -66,7 +75,7 @@ export async function sendAlertPush(
   // TODO(production hardening): sweep response.responses for
   // messaging/registration-token-not-registered and delete those token docs.
   const response = await admin.messaging().sendEachForMulticast(message);
-  logMulticastResult(`sendAlertPush(${patientId})`, response);
+  logMulticastResult(`sendAlertPush(${uid})`, response);
 }
 
 /** Pushes the latest actual reading (not predictive alerts) to every member,

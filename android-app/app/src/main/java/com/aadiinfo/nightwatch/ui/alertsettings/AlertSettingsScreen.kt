@@ -24,9 +24,9 @@ import com.aadiinfo.nightwatch.data.repository.PatientRepository
 import com.aadiinfo.nightwatch.ui.vmFactory
 
 @Composable
-fun AlertSettingsScreen(patientRepository: PatientRepository, patientId: String) {
+fun AlertSettingsScreen(patientRepository: PatientRepository, patientId: String, uid: String) {
     val viewModel: AlertSettingsViewModel =
-        viewModel(factory = vmFactory { AlertSettingsViewModel(patientRepository, patientId) })
+        viewModel(factory = vmFactory { AlertSettingsViewModel(patientRepository, patientId, uid) })
     val state = viewModel.uiState
 
     if (state.loading) {
@@ -40,7 +40,14 @@ fun AlertSettingsScreen(patientRepository: PatientRepository, patientId: String)
             .verticalScroll(rememberScrollState())
             .padding(24.dp)
     ) {
-        Text("Alert thresholds", style = MaterialTheme.typography.headlineSmall)
+        Text("Your alert thresholds", style = MaterialTheme.typography.headlineSmall)
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "Personal to this account - each family member sets their own, " +
+                "so your alerts may differ from what others see.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
         Spacer(Modifier.height(16.dp))
 
         Row {
