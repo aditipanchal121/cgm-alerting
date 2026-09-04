@@ -46,6 +46,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.aadiinfo.nightwatch.data.repository.PatientRepository
 import com.aadiinfo.nightwatch.domain.model.GlucoseReading
 import com.aadiinfo.nightwatch.domain.model.Thresholds
+import com.aadiinfo.nightwatch.ui.theme.AlertColors
 import com.aadiinfo.nightwatch.ui.vmFactory
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -120,7 +121,7 @@ private fun PredictionChart(
     thresholds: Thresholds
 ) {
     val actualColor = MaterialTheme.colorScheme.onSurface
-    val gridColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f)
+    val gridColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.15f)
     val nowColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
     val timeFormat = remember { SimpleDateFormat("h:mm a", Locale.getDefault()) }
 
@@ -158,8 +159,28 @@ private fun PredictionChart(
                     fun yFor(value: Float) =
                         size.height - ((value - minValue) / (maxValue - minValue)).coerceIn(0f, 1f) * size.height
 
+                    // Plain reference gridlines for scale - one per Y-axis
+                    // label (max/mid/min) and one per x-axis label below
+                    // (oldest/newest; "now" already gets its own distinct
+                    // line further down) - same treatment as the Dashboard's
+                    // trend graph, distinct from the colored low threshold
+                    // line, which marks an alert boundary, not just scale.
+                    listOf(maxValue, (maxValue + minValue) / 2f, minValue).forEach { value ->
+                        val y = yFor(value)
+                        drawLine(gridColor, Offset(0f, y), Offset(size.width, y), strokeWidth = 1.dp.toPx())
+                    }
+                    listOf(oldestMs, newestMs).forEach { ms ->
+                        val x = xFor(ms)
+                        drawLine(gridColor, Offset(x, 0f), Offset(x, size.height), strokeWidth = 1.dp.toPx())
+                    }
+
                     val thresholdY = yFor(thresholds.lowMgdl.toFloat())
-                    drawLine(gridColor, Offset(0f, thresholdY), Offset(size.width, thresholdY), strokeWidth = 1.dp.toPx())
+                    drawLine(
+                        AlertColors.Low.copy(alpha = 0.4f),
+                        Offset(0f, thresholdY),
+                        Offset(size.width, thresholdY),
+                        strokeWidth = 1.dp.toPx()
+                    )
 
                     val nowX = xFor(lastReading.dateMs)
                     drawLine(nowColor, Offset(nowX, 0f), Offset(nowX, size.height), strokeWidth = 1.dp.toPx())
@@ -172,7 +193,7 @@ private fun PredictionChart(
                     drawPath(path, color = actualColor, style = Stroke(width = 3.dp.toPx()))
                     readings.forEach { reading ->
                         drawCircle(
-                            color = actualColor,
+                            color = AlertColors.forGlucoseZone(reading.sgv, thresholds),
                             radius = 2.5.dp.toPx(),
                             center = Offset(xFor(reading.dateMs), yFor(reading.sgv.toFloat()))
                         )
@@ -287,7 +308,10 @@ private fun PredictorCard(output: PredictorOutput) {
                         "No threshold crossing predicted within 30 min"
                     },
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    // Same blue as a logged PREDICTED_LOW alert (this crossing
+                    // is always toward thresholds.lowMgdl - see GlucosePredictor.kt)
+                    color = if (minutesToThreshold != null) AlertColors.PredictedLow
+                    else MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
             output.result.note?.let {

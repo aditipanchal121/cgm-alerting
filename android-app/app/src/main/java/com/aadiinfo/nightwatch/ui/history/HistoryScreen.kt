@@ -14,12 +14,11 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.aadiinfo.nightwatch.data.repository.PatientRepository
 import com.aadiinfo.nightwatch.domain.model.AlertEvent
-import com.aadiinfo.nightwatch.domain.model.Severity
+import com.aadiinfo.nightwatch.ui.theme.AlertColors
 import com.aadiinfo.nightwatch.ui.vmFactory
 import java.text.DateFormat
 import java.text.SimpleDateFormat
@@ -78,16 +77,10 @@ private fun AlertRow(alert: AlertEvent, timeFormat: DateFormat) {
     Column(modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp)) {
         Text(
             alert.type.name.replace('_', ' '),
-            color = severityColor(alert.severity),
+            color = AlertColors.forAlertType(alert.type, alert.severity),
             style = MaterialTheme.typography.titleSmall
         )
         Text(alert.message, style = MaterialTheme.typography.bodyMedium)
         Text(timeFormat.format(Date(alert.timestamp)), style = MaterialTheme.typography.bodySmall)
     }
-}
-
-private fun severityColor(severity: Severity): Color = when (severity) {
-    Severity.CRITICAL -> Color(0xFFD32F2F)
-    Severity.WARNING -> Color(0xFFF9A825)
-    Severity.INFO -> Color(0xFF616161)
 }

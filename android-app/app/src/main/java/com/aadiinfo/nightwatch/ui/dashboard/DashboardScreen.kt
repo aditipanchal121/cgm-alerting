@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -28,6 +29,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
@@ -41,6 +43,7 @@ import com.aadiinfo.nightwatch.data.repository.PatientRepository
 import com.aadiinfo.nightwatch.domain.model.GlucoseReading
 import com.aadiinfo.nightwatch.domain.model.Thresholds
 import com.aadiinfo.nightwatch.domain.model.TrendDirection
+import com.aadiinfo.nightwatch.ui.theme.AlertColors
 import com.aadiinfo.nightwatch.ui.vmFactory
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -101,7 +104,7 @@ private fun GlucoseTrendChart(readings: List<GlucoseReading>, thresholds: Thresh
     var selectedIndex by remember(readings) { mutableStateOf<Int?>(null) }
 
     val lineColor = MaterialTheme.colorScheme.primary
-    val gridColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f)
+    val gridColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.15f)
     val selectionColor = MaterialTheme.colorScheme.onSurface
 
     val oldestMs = readings.first().dateMs
@@ -159,10 +162,15 @@ private fun GlucoseTrendChart(readings: List<GlucoseReading>, thresholds: Thresh
     }
 
     Column {
-        Row {
+        // Explicit height on the row itself (not just its children) pins the
+        // whole graph area to a hard 160dp regardless of what either child
+        // measures to - the fix for zooming shifting the labels/rows below
+        // it downward, which happened because nothing forced the row's own
+        // cross-axis size to stay fixed independent of its children.
+        Row(modifier = Modifier.height(160.dp)) {
             Column(
                 modifier = Modifier
-                    .height(160.dp)
+                    .fillMaxHeight()
                     .width(36.dp),
                 verticalArrangement = Arrangement.SpaceBetween
             ) {
@@ -171,11 +179,11 @@ private fun GlucoseTrendChart(readings: List<GlucoseReading>, thresholds: Thresh
                 Text("${minValue.roundToInt()}", style = MaterialTheme.typography.labelSmall)
             }
 
-            Box(modifier = Modifier.weight(1f)) {
+            Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
                 Canvas(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(160.dp)
+                        .fillMaxHeight()
                         .pointerInput(readings) {
                             awaitEachGesture {
                                 awaitFirstDown()
@@ -226,10 +234,34 @@ private fun GlucoseTrendChart(readings: List<GlucoseReading>, thresholds: Thresh
                         size.height - ((sgv - minValue) / (maxValue - minValue)).coerceIn(0f, 1f) * size.height
 
                     clipRect {
-                        listOf(thresholds.lowMgdl, thresholds.highMgdl).forEach { threshold ->
-                            val y = yFor(threshold)
+                        // Plain reference gridlines for scale - one per Y-axis
+                        // label (max/mid/min) and one per time label below
+                        // (start/mid/end) - distinct from the colored low/high
+                        // threshold lines, which mark alert boundaries, not
+                        // just scale.
+                        listOf(maxValue, (maxValue + minValue) / 2f, minValue).forEach { value ->
+                            val y = yFor(value.roundToInt())
                             drawLine(gridColor, Offset(0f, y), Offset(size.width, y), strokeWidth = 1.dp.toPx())
                         }
+                        listOf(windowStartMs, (windowStartMs + windowEndMs) / 2, windowEndMs).forEach { ms ->
+                            val x = xFor(ms)
+                            drawLine(gridColor, Offset(x, 0f), Offset(x, size.height), strokeWidth = 1.dp.toPx())
+                        }
+
+                        val lowY = yFor(thresholds.lowMgdl)
+                        drawLine(
+                            AlertColors.Low.copy(alpha = 0.4f),
+                            Offset(0f, lowY),
+                            Offset(size.width, lowY),
+                            strokeWidth = 1.dp.toPx()
+                        )
+                        val highY = yFor(thresholds.highMgdl)
+                        drawLine(
+                            AlertColors.High.copy(alpha = 0.4f),
+                            Offset(0f, highY),
+                            Offset(size.width, highY),
+                            strokeWidth = 1.dp.toPx()
+                        )
 
                         if (visibleReadings.size >= 2) {
                             val path = Path()
@@ -308,17 +340,20 @@ private fun GlucoseTrendChart(readings: List<GlucoseReading>, thresholds: Thresh
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-            if (isZoomed) {
-                Text(
-                    "Reset zoom",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.clickable {
+            // Always present (not just when zoomed) so this row's height never
+            // changes based on zoom state - only visible/clickable when
+            // zoomed, via alpha rather than removing it from composition.
+            Text(
+                "Reset zoom",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier
+                    .alpha(if (isZoomed) 1f else 0f)
+                    .clickable(enabled = isZoomed) {
                         windowStartOffsetMs = 0f
                         windowSpanMs = fullSpanMs
                     }
-                )
-            }
+            )
         }
     }
 }
@@ -390,8 +425,4 @@ private fun ReadingCard(reading: GlucoseReading, thresholds: Thresholds) {
     )
 }
 
-private fun glucoseColor(sgv: Int, thresholds: Thresholds): Color = when {
-    sgv <= thresholds.urgentLowMgdl || sgv >= thresholds.urgentHighMgdl -> Color(0xFFD32F2F)
-    sgv <= thresholds.lowMgdl || sgv >= thresholds.highMgdl -> Color(0xFFF9A825)
-    else -> Color(0xFF2E7D32)
-}
+private fun glucoseColor(sgv: Int, thresholds: Thresholds): Color = AlertColors.forGlucoseZone(sgv, thresholds)

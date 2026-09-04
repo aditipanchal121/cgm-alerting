@@ -47,6 +47,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.aadiinfo.nightwatch.R
 import com.aadiinfo.nightwatch.data.repository.AuthRepository
 import com.aadiinfo.nightwatch.data.repository.FcmTokenRepository
@@ -179,10 +180,37 @@ private fun LoadingScreen() {
     }
 }
 
+/** Shrinks in 1sp steps until the label fits its available width on one
+ * line, instead of ellipsis-truncating - the compose-bom version this app
+ * pins (2024.09.00) predates Text's built-in autoSize parameter, so this is
+ * the manual equivalent: render, check onTextLayout for overflow, retry one
+ * size down. Bottomed out at 8sp so a pathologically narrow width can't
+ * shrink this into something unreadable instead of just clipping. */
+@Composable
+private fun AutoSizeTabLabel(text: String) {
+    val startingSize = MaterialTheme.typography.labelSmall.fontSize
+    var fontSize by remember(text) { mutableStateOf(startingSize) }
+    Text(
+        text,
+        maxLines = 1,
+        softWrap = false,
+        overflow = TextOverflow.Clip,
+        fontSize = fontSize,
+        onTextLayout = { result ->
+            if (result.didOverflowWidth && fontSize.value > 8f) {
+                fontSize = (fontSize.value - 1f).sp
+            }
+        }
+    )
+}
+
 private enum class Tab(val label: String) {
-    DASHBOARD("Dashboard"),
+    DASHBOARD("Home"),
     HISTORY("History"),
-    PREDICTIONS("Predictions"),
+    // "Predictions" was the longest label, most prone to truncating on a
+    // narrower screen or larger system font size once all 5 tabs became
+    // visible to everyone - shortened rather than relying only on ellipsis.
+    PREDICTIONS("Predict"),
     SETTINGS("Settings"),
     PAIR_DEVICE("Alarm")
 }
@@ -243,10 +271,12 @@ private fun MainScreen(
                         icon = { Icon(tabIcon(t), contentDescription = t.label) },
                         // A wrapped two-line label makes that item's icon sit
                         // out of alignment with the single-line ones next to
-                        // it - force single-line so a longer label (or a
-                        // larger system font size) degrades to an ellipsis
-                        // instead of breaking layout.
-                        label = { Text(t.label, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                        // it - force single-line. Shrinking to fit (below)
+                        // instead of a fixed size handles a larger system font
+                        // setting directly rather than just buying headroom
+                        // against it - "Dashboard" still didn't fit on labelSmall
+                        // alone on a phone with a larger text-size setting.
+                        label = { AutoSizeTabLabel(t.label) }
                     )
                 }
             }
