@@ -10,5 +10,6 @@ val availablePredictors: List<GlucosePredictor> = listOf(
     LinearRegressionPredictor(),
     IobAwarePredictor(),
     DirectionAwarePredictor(),
-    QuadraticPredictor()
+    KalmanFilterPredictor(),
+    MultiBolusInsulinActivityPredictor()
 )

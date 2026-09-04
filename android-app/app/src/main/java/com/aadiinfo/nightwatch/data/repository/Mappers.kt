@@ -6,6 +6,7 @@ import com.aadiinfo.nightwatch.domain.model.GlucoseReading
 import com.aadiinfo.nightwatch.domain.model.Patient
 import com.aadiinfo.nightwatch.domain.model.Severity
 import com.aadiinfo.nightwatch.domain.model.Thresholds
+import com.aadiinfo.nightwatch.domain.model.TreatmentEvent
 import com.google.firebase.firestore.DocumentSnapshot
 import java.util.TimeZone
 
@@ -31,7 +32,12 @@ fun DocumentSnapshot.toThresholds(): Thresholds? {
         nightWindowStart = getString("nightWindowStart") ?: "22:00",
         nightWindowEnd = getString("nightWindowEnd") ?: "07:00",
         timezone = getString("timezone") ?: TimeZone.getDefault().id,
-        staleMinutes = (getLong("staleMinutes") ?: 20L).toInt()
+        staleMinutes = (getLong("staleMinutes") ?: 20L).toInt(),
+        // Falls back to the old "insulinCorrectionFactor" key (pre-rename) so
+        // an already-saved value isn't silently reset to the default.
+        insulinSensitivityFactor = getDouble("insulinSensitivityFactor")
+            ?: getDouble("insulinCorrectionFactor") ?: 40.0,
+        carbRatio = getDouble("carbRatio") ?: 10.0
     )
 }
 
@@ -45,7 +51,9 @@ fun Thresholds.toMap(): Map<String, Any?> = mapOf(
     "nightWindowStart" to nightWindowStart,
     "nightWindowEnd" to nightWindowEnd,
     "timezone" to timezone,
-    "staleMinutes" to staleMinutes
+    "staleMinutes" to staleMinutes,
+    "insulinSensitivityFactor" to insulinSensitivityFactor,
+    "carbRatio" to carbRatio
 )
 
 fun DocumentSnapshot.toGlucoseReading(): GlucoseReading? {
@@ -57,6 +65,18 @@ fun DocumentSnapshot.toGlucoseReading(): GlucoseReading? {
         dateMs = getLong("dateMs") ?: 0L,
         iob = getDouble("iob"),
         iobUnreliable = getBoolean("iobUnreliable") ?: false
+    )
+}
+
+fun DocumentSnapshot.toTreatmentEvent(): TreatmentEvent? {
+    if (!exists()) return null
+    val mills = getLong("mills") ?: return null
+    return TreatmentEvent(
+        eventType = getString("eventType") ?: "Unknown",
+        mills = mills,
+        insulin = getDouble("insulin"),
+        carbs = getDouble("carbs"),
+        durationMinutes = getDouble("durationMinutes")
     )
 }
 

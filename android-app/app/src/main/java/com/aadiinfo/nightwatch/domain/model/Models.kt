@@ -34,6 +34,17 @@ data class GlucoseReading(
     val iobUnreliable: Boolean = false
 )
 
+/** Mirrors a Nightscout treatment entry (bolus or carb correction), as
+ * persisted by the backend's `ingestNewTreatments` into
+ * patients/{id}/treatments - see backend/README.md's data model section. */
+data class TreatmentEvent(
+    val eventType: String,
+    val mills: Long,
+    val insulin: Double?,
+    val carbs: Double?,
+    val durationMinutes: Double?
+)
+
 data class AlertEvent(
     val id: String = "",
     val type: AlertType,
@@ -53,7 +64,11 @@ data class Thresholds(
     val nightWindowStart: String = "22:00",
     val nightWindowEnd: String = "07:00",
     val timezone: String = TimeZone.getDefault().id,
-    val staleMinutes: Int = 20
+    val staleMinutes: Int = 20,
+    // mg/dL that 1 unit of insulin is expected to lower glucose by.
+    val insulinSensitivityFactor: Double = 40.0,
+    // Grams of carbs covered by 1 unit of insulin (insulin-to-carb ratio).
+    val carbRatio: Double = 10.0
 )
 
 data class Patient(

@@ -26,6 +26,10 @@ export interface Thresholds {
   timezone: string;
   /** how old the latest reading can be before it's flagged as a signal-loss alert */
   staleMinutes: number;
+  /** mg/dL that 1 unit of insulin is expected to lower glucose by. */
+  insulinSensitivityFactor: number;
+  /** Grams of carbs covered by 1 unit of insulin (insulin-to-carb ratio). */
+  carbRatio: number;
 }
 
 export interface GlucoseReading {

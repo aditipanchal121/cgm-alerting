@@ -2,6 +2,7 @@ package com.aadiinfo.nightwatch.ui.predictions
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -41,6 +42,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.aadiinfo.nightwatch.data.repository.PatientRepository
@@ -67,11 +70,6 @@ fun PredictionsScreen(patientRepository: PatientRepository, patientId: String, u
         viewModel(factory = vmFactory { PredictionsViewModel(patientRepository, patientId, uid) })
     val state by viewModel.uiState.collectAsState()
 
-    // LazyColumn rather than a plain Column+verticalScroll: it's the same
-    // scrolling container HistoryScreen already uses for its list, and
-    // keeping scrolling item-based (header/chart as one item, each
-    // predictor card as its own) avoids relying on a single tall Column to
-    // report the right scrollable height as content is added below the fold.
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -159,12 +157,10 @@ private fun PredictionChart(
                     fun yFor(value: Float) =
                         size.height - ((value - minValue) / (maxValue - minValue)).coerceIn(0f, 1f) * size.height
 
-                    // Plain reference gridlines for scale - one per Y-axis
-                    // label (max/mid/min) and one per x-axis label below
-                    // (oldest/newest; "now" already gets its own distinct
-                    // line further down) - same treatment as the Dashboard's
-                    // trend graph, distinct from the colored low threshold
-                    // line, which marks an alert boundary, not just scale.
+                    // Reference gridlines for scale, one per Y-axis label
+                    // and one per x-axis label - distinct from the colored
+                    // low threshold line below, which marks an alert
+                    // boundary rather than just scale.
                     listOf(maxValue, (maxValue + minValue) / 2f, minValue).forEach { value ->
                         val y = yFor(value)
                         drawLine(gridColor, Offset(0f, y), Offset(size.width, y), strokeWidth = 1.dp.toPx())
@@ -232,10 +228,6 @@ private fun PredictionChart(
         }
 
         Spacer(Modifier.height(8.dp))
-        // FlowRow rather than a plain Row: with 4 predictors now (after
-        // Quadratic moved out on its own), longer names like "Direction-aware
-        // (windowed)" no longer reliably fit on one line - this wraps to a
-        // second line instead of overflowing/clipping past the screen edge.
         FlowRow(
             modifier = Modifier
                 .fillMaxWidth()
@@ -260,12 +252,6 @@ private fun PredictionChart(
 
 @Composable
 private fun PredictorCard(output: PredictorOutput) {
-    // A dialog rather than inline text: the earlier press-and-hold-to-reveal
-    // design broke down for cards near the bottom of the list, since the
-    // description could render past the visible viewport with no way to
-    // scroll to it (releasing the hold to scroll immediately hid it again).
-    // A dialog renders as its own overlay independent of this list's scroll
-    // position, so it's never cut off regardless of which card triggered it.
     var showDescription by remember { mutableStateOf(false) }
 
     Surface(
@@ -328,7 +314,22 @@ private fun PredictorCard(output: PredictorOutput) {
                 TextButton(onClick = { showDescription = false }) { Text("Close") }
             },
             title = { Text(output.predictorName) },
-            text = { Text(output.description) }
+            text = {
+                Column {
+                    Text(output.description)
+                    output.sourceUrl?.let { url ->
+                        val uriHandler = LocalUriHandler.current
+                        Spacer(Modifier.height(12.dp))
+                        Text(
+                            "Model details ↗",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.clickable { uriHandler.openUri(url) }
+                        )
+                    }
+                }
+            }
         )
     }
 }

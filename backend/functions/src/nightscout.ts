@@ -81,6 +81,52 @@ async function fetchDeviceStatus(trimmedBase: string, apiSecret: string): Promis
   }
 }
 
+export interface TreatmentEvent {
+  nightscoutId: string;
+  eventType: string;
+  mills: number;
+  insulin: number | null;
+  carbs: number | null;
+  /** Minutes - from the treatment's `duration`/`absorptionTime` field. */
+  durationMinutes: number | null;
+  notes: string | null;
+}
+
+/** Fetches only treatments newer than [sinceMs] (null on first-ever sync,
+ * which backfills up to [count] recent ones instead of starting from
+ * nothing). Nightscout's REST API supports MongoDB-style `find[field][$op]`
+ * query params on any collection, same mechanism used elsewhere in the
+ * Nightscout ecosystem for date-ranged queries - this keeps each poll's
+ * fetch (and therefore each poll's Firestore writes) proportional to how
+ * often boluses/carbs actually happen, not to the 5-minute poll cadence.
+ * The client-side mills filter below is a defensive backstop in case that
+ * server-side filter is ever ignored (e.g. an older Nightscout version),
+ * so a filter that silently no-ops still can't cause duplicate writes. */
+export async function fetchTreatmentsSince(
+  baseUrl: string,
+  apiSecret: string,
+  sinceMs: number | null,
+  count = 100
+): Promise<TreatmentEvent[]> {
+  const trimmedBase = baseUrl.replace(/\/$/, '');
+  const query = sinceMs != null ? `find[mills][$gte]=${sinceMs}&count=${count}` : `count=${count}`;
+  const raw = await getJson<Array<Record<string, any>>>(
+    `${trimmedBase}/api/v1/treatments.json?${query}`,
+    apiSecret
+  );
+  return raw
+    .filter((t) => typeof t.mills === 'number' && (sinceMs == null || t.mills > sinceMs))
+    .map((t) => ({
+      nightscoutId: String(t._id),
+      eventType: typeof t.eventType === 'string' ? t.eventType : 'Unknown',
+      mills: t.mills as number,
+      insulin: typeof t.insulin === 'number' ? t.insulin : null,
+      carbs: typeof t.carbs === 'number' ? t.carbs : null,
+      durationMinutes: typeof t.duration === 'number' ? t.duration : null,
+      notes: typeof t.notes === 'string' ? t.notes : null,
+    }));
+}
+
 export async function verifyConnection(
   baseUrl: string,
   apiSecret: string

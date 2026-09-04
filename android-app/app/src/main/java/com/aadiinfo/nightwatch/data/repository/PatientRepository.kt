@@ -4,6 +4,7 @@ import com.aadiinfo.nightwatch.domain.model.AlertEvent
 import com.aadiinfo.nightwatch.domain.model.GlucoseReading
 import com.aadiinfo.nightwatch.domain.model.Patient
 import com.aadiinfo.nightwatch.domain.model.Thresholds
+import com.aadiinfo.nightwatch.domain.model.TreatmentEvent
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.firestore
 import com.google.firebase.functions.FirebaseFunctions
@@ -70,6 +71,19 @@ class PatientRepository(
             .limit(limit)
             .snapshotFlow()
             .map { snapshot -> snapshot.documents.mapNotNull { it.toGlucoseReading() }.asReversed() }
+
+    // Same count-limit-not-date-range reasoning as observeRecentReadings
+    // above (SharingStarted.Lazily means a fixed sinceMs cutoff would never
+    // advance) - training-data consumers (see GlucosePredictor.kt's
+    // multi-bolus insulin-activity model) need the most recent boluses
+    // regardless of how long the listener's been attached.
+    fun observeRecentTreatments(patientId: String, limit: Long): Flow<List<TreatmentEvent>> =
+        firestore.collection("patients").document(patientId)
+            .collection("treatments")
+            .orderBy("mills", com.google.firebase.firestore.Query.Direction.DESCENDING)
+            .limit(limit)
+            .snapshotFlow()
+            .map { snapshot -> snapshot.documents.mapNotNull { it.toTreatmentEvent() }.asReversed() }
 
     // Personal to each member (evaluated against their own thresholds - see
     // pollOnePatient in the backend), not a shared patient-wide log. No

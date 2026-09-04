@@ -56,6 +56,14 @@ See `firestore.rules` for the authoritative access model:
   nearest timestamp - e.g. per `readings.dateMs`, take the last
   `externalIobHistory.reportedAt <= dateMs` - rather than relying only on
   whatever `readings.iob` already captured at that poll tick.
+- `patients/{patientId}/treatments` - bolus/carb event history mirrored from
+  Nightscout's `treatments.json` (`{ nightscoutId, eventType, mills, insulin,
+  carbs, durationMinutes, notes }`), written only by `pollGlucose` via
+  `ingestNewTreatments`. Fetched and written incrementally via the patient
+  doc's `lastTreatmentMs` cursor field. Training data, same as
+  `readings`/`externalIobHistory`; also consumed on-device by
+  `GlucosePredictor.kt`'s `MultiBolusInsulinActivityPredictor` (see
+  `android-app/README.md`).
 - `devices/{deviceId}` - ESP32 pairing: `{ patientId, pairedAt, pairedBy }`.
 - Realtime Database `devices/{deviceId}/alert` - what the ESP32 firmware streams.
 

@@ -3,25 +3,19 @@ package com.aadiinfo.nightwatch.domain
 import com.aadiinfo.nightwatch.domain.model.GlucoseReading
 import com.aadiinfo.nightwatch.domain.model.Thresholds
 import com.aadiinfo.nightwatch.domain.model.TrendDirection
-import kotlin.math.abs
+import com.aadiinfo.nightwatch.domain.model.TreatmentEvent
+import kotlin.math.exp
 import kotlin.math.pow
-import kotlin.math.sqrt
 
 /** [projectedValue] is nullable so a predictor can decline to project at all
- * for the current conditions (see [QuadraticPredictor], which only fits a
- * curve for a steep trend) rather than being forced to always produce some
- * number. [note] is shown in the UI alongside whatever this call does
+ * for the current conditions, rather than being forced to always produce
+ * some number. [note] is shown in the UI alongside whatever this call does
  * produce - typically explaining why there's no projection this cycle. */
 data class PredictionResult(val projectedValue: Double?, val minutesToThreshold: Double?, val note: String? = null)
 
 /** CGMs don't report numeric values outside this range either - Dexcom
- * displays "LOW" below 40 and "HIGH" above 400 rather than a number - so an
- * extrapolated projection has no business claiming more precision than the
- * sensor itself would. Without this, an aggressively-curving fit (the
- * quadratic model especially, extrapolating a handful of noisy points 30
- * minutes past the last one) can produce something like -1 mg/dL: correct
- * polynomial math, but physiologically meaningless and dangerous to show
- * next to a real reading. */
+ * displays "LOW" below 40 and "HIGH" above 400 rather than a number - so a
+ * projection is clamped to the same range a real reading could take. */
 private const val MIN_DISPLAYABLE_MGDL = 40.0
 private const val MAX_DISPLAYABLE_MGDL = 400.0
 
@@ -43,7 +37,17 @@ interface GlucosePredictor {
      * Predictions tab, so it's clear what makes each model different. */
     val description: String
 
-    fun predict(readings: List<GlucoseReading>, thresholds: Thresholds, horizonMinutes: Int = 30): PredictionResult
+    /** Optional link to a fuller write-up of the underlying model, shown as
+     * a tappable "Model details" link below [description] in the same
+     * dialog. */
+    val sourceUrl: String? get() = null
+
+    fun predict(
+        readings: List<GlucoseReading>,
+        thresholds: Thresholds,
+        horizonMinutes: Int = 30,
+        treatments: List<TreatmentEvent> = emptyList()
+    ): PredictionResult
 }
 
 class LinearRegressionPredictor : GlucosePredictor {
@@ -57,7 +61,8 @@ class LinearRegressionPredictor : GlucosePredictor {
     override fun predict(
         readings: List<GlucoseReading>,
         thresholds: Thresholds,
-        horizonMinutes: Int
+        horizonMinutes: Int,
+        treatments: List<TreatmentEvent>
     ): PredictionResult {
         val sorted = readings.sortedBy { it.dateMs }
         return linearProjection(sorted, thresholds.lowMgdl, horizonMinutes)
@@ -65,9 +70,8 @@ class LinearRegressionPredictor : GlucosePredictor {
 }
 
 /** Two-point linear extrapolation (oldest to newest of [sorted]) toward
- * [thresholdMgdl]. Shared by [LinearRegressionPredictor] (full window),
- * [DirectionAwarePredictor] (an urgency-sized window), and as the fallback
- * path for [QuadraticPredictor] when a quadratic fit isn't well-determined. */
+ * [thresholdMgdl]. Shared by [LinearRegressionPredictor] (full window) and
+ * [DirectionAwarePredictor] (an urgency-sized window). */
 private fun linearProjection(
     sorted: List<GlucoseReading>,
     thresholdMgdl: Int,
@@ -97,44 +101,40 @@ private fun linearProjection(
 
 /**
  * Adjusts the same observed linear trend as [LinearRegressionPredictor] by
- * how much active insulin (IOB) is still on board, on the theory that a
- * currently falling trend driven by insulin should taper off as that
- * insulin's effect runs out - not keep falling in a straight line for the
- * full horizon, which is exactly where plain linear extrapolation tends to
- * over-predict lows.
+ * how much theoretical glucose-lowering effect the current IOB still has
+ * relative to how much room there actually is left to fall - a
+ * per-measurement ratio, not a fixed cutoff, so it means something different
+ * for the same IOB value depending on the current reading.
  *
- * This is deliberately NOT a real insulin activity/action curve model -
- * those need the time elapsed since each bolus, which isn't available here
- * (Gluroo's devicestatus only gives a live IOB snapshot, not a bolus
- * history). Instead it's a simpler, honestly-scoped heuristic:
- *
- * - Only downward trends are adjusted. A rising trend isn't something IOB
- *   explains, so it's left as plain linear extrapolation.
- * - The observed downward rate is trusted in full (unadjusted) when IOB is
- *   at or above the patient's IOB alert threshold - "there's plenty of
- *   active insulin, the fall is likely to continue."
- * - As IOB drops toward zero, the projected further fall is scaled down
- *   proportionally, tapering toward "no further net change" - "insulin is
- *   running out, the fall should flatten soon."
+ * - Only downward trends are adjusted; a rising trend is left as plain
+ *   linear extrapolation.
+ * - `IOB x insulinSensitivityFactor` estimates the total remaining mg/dL of
+ *   lowering effect still in the current IOB. Compared against how far the
+ *   current reading sits above a physiological floor
+ *   ([MIN_DISPLAYABLE_MGDL]), that gives a ratio: above 1 means there's
+ *   plausibly enough insulin left to explain the fall continuing at least
+ *   this fast, and can project a steeper fall than plain linear regression.
+ *   Below 1, it tapers toward no further change.
  * - If the latest reading's IOB is flagged unreliable (see
- *   [GlucoseReading.iobUnreliable] - Gluroo has been known to reset IOB to
- *   an implausible 0), that snapshot isn't trustworthy in either direction.
- *   Rather than guess, this falls back to the plain linear trend with no
- *   dampening at all - the same behavior as if IOB were unavailable.
+ *   [GlucoseReading.iobUnreliable]), this falls back to the plain linear
+ *   trend with no scaling at all.
  */
 class IobAwarePredictor : GlucosePredictor {
     override val name = "IOB-aware trend"
     override val description =
-        "Same straight-line trend as Linear regression, but tapers a falling " +
-            "projection based on how much active insulin (IOB) remains - trusts " +
-            "the fall fully when IOB is high, and scales it toward 'no further " +
-            "change' as IOB runs low. Falls back to the plain trend if IOB is " +
-            "missing or flagged unreliable."
+        "Same straight-line trend as Linear regression, but scales a falling " +
+            "projection by how much theoretical glucose-lowering effect " +
+            "remains in the current IOB (IOB x insulin sensitivity factor) " +
+            "relative to how far above a physiological floor the current " +
+            "reading is - can project a steeper fall than plain linear when " +
+            "that ratio is high, not just a gentler one. Falls back to the " +
+            "plain trend if IOB is missing or flagged unreliable."
 
     override fun predict(
         readings: List<GlucoseReading>,
         thresholds: Thresholds,
-        horizonMinutes: Int
+        horizonMinutes: Int,
+        treatments: List<TreatmentEvent>
     ): PredictionResult {
         val sorted = readings.sortedBy { it.dateMs }
         if (sorted.size < 2) {
@@ -150,12 +150,15 @@ class IobAwarePredictor : GlucosePredictor {
 
         val observedRatePerMinute = (last.sgv - first.sgv) / minutesElapsed
         val iob = last.iob
-        val canDampen = observedRatePerMinute < 0 &&
+        val canScale = observedRatePerMinute < 0 &&
             iob != null &&
             !last.iobUnreliable &&
-            thresholds.iobThreshold > 0.0
-        val effectiveRatePerMinute = if (canDampen) {
-            val iobFactor = (iob!! / thresholds.iobThreshold).coerceIn(0.0, 1.0)
+            thresholds.insulinSensitivityFactor > 0.0
+        val effectiveRatePerMinute = if (canScale) {
+            // Coerced to at least 1 mg/dL to avoid dividing by zero or
+            // flipping sign when the reading is already at/below the floor.
+            val distanceAboveFloor = (last.sgv - MIN_DISPLAYABLE_MGDL).coerceAtLeast(1.0)
+            val iobFactor = (iob!! * thresholds.insulinSensitivityFactor) / distanceAboveFloor
             observedRatePerMinute * iobFactor
         } else {
             observedRatePerMinute
@@ -177,37 +180,14 @@ private const val DOUBLE_ARROW_WINDOW_MINUTES = 15
 
 /**
  * Estimates the current rate of change from a window sized to how urgent the
- * arrow is, then extrapolates that rate linearly - the same model family
- * throughout ([linearProjection]); the arrow only changes how much history
- * gets averaged into the rate estimate:
+ * arrow is, then extrapolates that rate linearly ([linearProjection]):
  *
  * - Flat/diagonal (< 2 mg/dL/min) or unknown direction: the full fetched
- *   window. The trend is slow enough that more data safely smooths out
- *   noise without diluting anything meaningfully different.
- * - Single arrow (2-3 mg/dL/min): an intermediate ~20-minute window.
+ *   window.
+ * - Single arrow (2-3 mg/dL/min): a ~20-minute window.
  * - Double arrow (>= 3 mg/dL/min): a 15-minute window, matching the Loop
- *   automated insulin delivery algorithm's own validated "glucose momentum"
- *   calculation (see loopkit.github.io/loopdocs/operation/algorithm/prediction) -
- *   the most urgent case gets the least-diluted, most current rate estimate,
- *   so a fast change that only just started isn't averaged down by calmer
- *   data from earlier in the window.
- *
- * This replaced an earlier design that used quadratic/exponential curve
- * fitting for steeper arrows. That didn't hold up under scrutiny: even
- * Loop - a widely used, real-world automated insulin delivery system - uses
- * plain linear regression for its own short-term rate estimate rather than
- * curve-fitting. It manages "how long can this rate be trusted" by fading
- * that rate's *influence* into a broader prediction that also models
- * insulin and carbs, not by assuming the rate itself decelerates. This
- * predictor has no such other components to hand off to, so extrapolating
- * the recent rate at full, undiminished strength for the whole horizon is
- * the safer choice than assuming - without evidence - that it levels off.
- * See [QuadraticPredictor] for the curve-fitting approach, kept as a
- * separate, clearly-experimental comparison point rather than deleted.
- *
- * The 15-minute double-arrow window is a direct match to Loop's own number;
- * the 20-minute single-arrow window is an engineering choice sitting
- * between that and the full window, not a literature-derived value.
+ *   automated insulin delivery algorithm's own "glucose momentum"
+ *   calculation (see loopkit.github.io/loopdocs/operation/algorithm/prediction).
  */
 class DirectionAwarePredictor : GlucosePredictor {
     override val name = "Direction-aware (windowed)"
@@ -223,7 +203,8 @@ class DirectionAwarePredictor : GlucosePredictor {
     override fun predict(
         readings: List<GlucoseReading>,
         thresholds: Thresholds,
-        horizonMinutes: Int
+        horizonMinutes: Int,
+        treatments: List<TreatmentEvent>
     ): PredictionResult {
         val sorted = readings.sortedBy { it.dateMs }
         if (sorted.size < 2) {
@@ -251,172 +232,262 @@ private fun windowedReadings(sorted: List<GlucoseReading>, windowMinutes: Int?):
     return if (windowed.size >= 2) windowed else sorted
 }
 
-/** Direction arrows steep enough for a curved fit to mean something -
- * single/double up or down. Flat, diagonal, and unknown/out-of-range
- * directions are excluded: with only a handful of noisy CGM points, fitting
- * a quadratic to a trend that isn't clearly moving is much more likely to
- * be reading curvature into noise than capturing real acceleration. */
-private val QUADRATIC_ELIGIBLE_DIRECTIONS = setOf(
-    TrendDirection.SINGLE_UP,
-    TrendDirection.SINGLE_DOWN,
-    TrendDirection.DOUBLE_UP,
-    TrendDirection.DOUBLE_DOWN
-)
-
-private const val QUADRATIC_INELIGIBLE_NOTE =
-    "No quadratic projection for this trend - this model only fits a curve " +
-        "for a single or double up/down arrow, where there's a clear enough " +
-        "move for curvature to mean something rather than just amplifying " +
-        "noise on a flat or diagonal trend."
-
 /**
- * Quadratic (2nd-order polynomial) least-squares fit, restricted to steep
- * trend arrows (see [QUADRATIC_ELIGIBLE_DIRECTIONS]) - kept as a separate,
- * clearly-experimental point of comparison after [DirectionAwarePredictor]
- * moved away from curve-fitting in favor of a windowed linear model (see
- * that class's doc comment for why). A quadratic can capture
- * acceleration/deceleration a straight line can't, but is more sensitive to
- * noise, especially with only 3-4 points - shown here specifically so that
- * sensitivity is visible on the comparison chart, not because it's assumed
- * to be more accurate than the other models. Restricting it to steep arrows
- * doesn't fix that sensitivity; it just avoids applying curve-fitting where
- * there isn't even a clear trend for a curve to plausibly describe.
+ * Constant-velocity Kalman filter over state [glucose, rate-of-change],
+ * updated sequentially through the window's readings, then extrapolated
+ * linearly from the final smoothed rate estimate. Each new reading is
+ * weighted by the filter's own uncertainty (the Kalman gain), so a noisy
+ * reading is partly discounted rather than taken at face value. Does not
+ * estimate acceleration - the output is always a straight-line extrapolation
+ * from the final smoothed rate.
  *
- * The fit is recency-weighted (see [recencyWeight]) rather than treating
- * every point in the window equally.
+ * See:
+ * - Welch G, Bishop G. "An Introduction to the Kalman Filter." UNC Chapel
+ *   Hill, TR 95-041.
+ * - Facchinetti A, Sparacino G, Cobelli C. "Real-Time Improvement of
+ *   Continuous Glucose Monitoring Accuracy: The Smart Sensor Concept."
+ *   Diabetes Care, 2013 (Kalman filtering applied specifically to CGM
+ *   signal smoothing).
  */
-class QuadraticPredictor : GlucosePredictor {
-    override val name = "Quadratic (experimental)"
+class KalmanFilterPredictor : GlucosePredictor {
+    override val name = "Kalman filter"
     override val description =
-        "Fits a curved (quadratic) line instead of a straight one, weighting " +
-            "your most recent readings more heavily than older ones. Only " +
-            "runs for a single or double up/down arrow - kept as an " +
-            "experimental comparison point rather than a recommended model, " +
-            "since with only a handful of CGM readings it's prone to reading " +
-            "curvature into what's really just noise."
+        "Recursively estimates a smoothed rate of change from the noisy CGM " +
+            "readings, discounting ones its own uncertainty says are likely " +
+            "just sensor noise, then extrapolates that single rate forward. " +
+            "The standard technique for this exact problem - see Welch & " +
+            "Bishop, \"An Introduction to the Kalman Filter\" (UNC Chapel " +
+            "Hill TR 95-041), and Facchinetti et al. 2013, Diabetes Care, on " +
+            "Kalman filtering for CGM signal smoothing specifically."
 
     override fun predict(
         readings: List<GlucoseReading>,
         thresholds: Thresholds,
-        horizonMinutes: Int
+        horizonMinutes: Int,
+        treatments: List<TreatmentEvent>
     ): PredictionResult {
         val sorted = readings.sortedBy { it.dateMs }
-        val direction = TrendDirection.fromNightscout(sorted.last().direction)
-        if (direction !in QUADRATIC_ELIGIBLE_DIRECTIONS) {
-            return PredictionResult(projectedValue = null, minutesToThreshold = null, note = QUADRATIC_INELIGIBLE_NOTE)
+        if (sorted.size < 2) {
+            return PredictionResult(sorted.firstOrNull()?.sgv?.toDouble() ?: 0.0, null)
         }
-        if (sorted.size < 3) {
-            return linearProjection(sorted, thresholds.lowMgdl, horizonMinutes)
+
+        // State: [glucose (mg/dL), velocity (mg/dL per minute)]. Covariance
+        // starts wide on velocity (no confidence yet in the initial guess of
+        // 0) and narrows as readings arrive.
+        var glucose = sorted.first().sgv.toDouble()
+        var velocity = 0.0
+        var pGG = MEASUREMENT_VARIANCE
+        var pGV = 0.0
+        var pVV = INITIAL_VELOCITY_VARIANCE
+
+        var previousMs = sorted.first().dateMs
+        for (i in 1 until sorted.size) {
+            val reading = sorted[i]
+            val dt = (reading.dateMs - previousMs) / 60_000.0
+            previousMs = reading.dateMs
+            if (dt <= 0) continue
+
+            // Predict: propagate state and covariance forward by dt under a
+            // constant-velocity model (P = F*P*F^T + Q, F = [[1,dt],[0,1]]),
+            // adding process noise so velocity can still adapt to a genuine
+            // trend change within the window instead of being smoothed away.
+            glucose += velocity * dt
+            val propagatedPGV = pGV + dt * pVV
+            pGG += dt * (pGV + propagatedPGV) + PROCESS_VARIANCE_POSITION * dt
+            pGV = propagatedPGV
+            pVV += PROCESS_VARIANCE_VELOCITY * dt
+
+            // Update: fold in this reading via the Kalman gain - a noisy
+            // reading (large innovation relative to current uncertainty)
+            // gets discounted rather than trusted at face value the way a
+            // raw two-point or ordinary least-squares rate would be.
+            val innovation = reading.sgv - glucose
+            val innovationVariance = pGG + MEASUREMENT_VARIANCE
+            val kalmanGainG = pGG / innovationVariance
+            val kalmanGainV = pGV / innovationVariance
+
+            glucose += kalmanGainG * innovation
+            velocity += kalmanGainV * innovation
+
+            val updatedPGG = (1 - kalmanGainG) * pGG
+            val updatedPGV = (1 - kalmanGainG) * pGV
+            pVV -= kalmanGainV * pGV
+            pGG = updatedPGG
+            pGV = updatedPGV
         }
-        return quadraticProjection(sorted, thresholds.lowMgdl, horizonMinutes)
+
+        val projected = clampToDisplayable(glucose + velocity * horizonMinutes)
+        if (velocity == 0.0) {
+            return PredictionResult(projected, null)
+        }
+
+        val minutesToThreshold = (thresholds.lowMgdl - glucose) / velocity
+        val crossesWithinHorizon = minutesToThreshold > 0 && minutesToThreshold <= horizonMinutes
+        return PredictionResult(projected, if (crossesWithinHorizon) minutesToThreshold else null)
+    }
+
+    private companion object {
+        // CGM sensor noise variance - a commonly cited standard deviation
+        // for consumer CGMs is on the order of 10 mg/dL, squared here.
+        const val MEASUREMENT_VARIANCE = 100.0 // (10 mg/dL)^2
+        // Initial uncertainty on velocity - the filter starts knowing
+        // nothing about the rate of change and resolves it over the first
+        // several readings.
+        const val INITIAL_VELOCITY_VARIANCE = 4.0
+        // Process noise: how much the true glucose/velocity is expected to
+        // wander per minute beyond what constant-velocity predicts, so the
+        // filter can still track a genuine trend change within the window.
+        const val PROCESS_VARIANCE_POSITION = 0.25
+        const val PROCESS_VARIANCE_VELOCITY = 0.01
     }
 }
 
-/** A point twice this many minutes older than the newest reading in the
- * window counts for a quarter as much in the fit, half again as many minutes
- * older counts for an eighth, and so on - see [recencyWeight]. Chosen so
- * that within a 30-minute window, the last ~10-15 minutes dominate the
- * curve while older points still contribute rather than being hard-cut. */
-private const val QUADRATIC_RECENCY_HALF_LIFE_MINUTES = 10.0
+/** Duration of insulin action and time-to-peak activity, in minutes, shared
+ * across all boluses (a single insulin type is in use). */
+private const val INSULIN_DURATION_MINUTES = 240.0
+private const val INSULIN_PEAK_MINUTES = 75.0
+private val INSULIN_DURATION_MS: Long = (INSULIN_DURATION_MINUTES * 60_000.0).toLong()
 
-/** Exponential recency decay weight for weighted least squares: a point
- * [ageMinutes] older than the newest reading gets `0.5^(ageMinutes /
- * halfLife)` of the weight a same-aged (age 0) point would get. This is the
- * same principle behind locally-weighted regression (LOESS) and
- * exponentially-weighted moving averages - recent points dominate the fit,
- * older points fade out smoothly rather than being weighted equally or
- * hard-excluded by a cutoff. */
-private fun recencyWeight(ageMinutes: Double): Double =
-    0.5.pow(ageMinutes / QUADRATIC_RECENCY_HALF_LIFE_MINUTES)
+/** Fallback carb absorption duration, in minutes, used only when a
+ * treatment has no `durationMinutes` of its own (Nightscout's per-entry
+ * `absorptionTime`) - so a specific fast- or slow-absorbing entry, once
+ * recorded, is used directly instead of assuming every carb behaves the
+ * same. [CARB_PEAK_RATIO] reuses the same fraction-of-duration-to-peak
+ * shape as the insulin curve, scaled to whatever duration applies. */
+private const val CARB_DEFAULT_DURATION_MINUTES = 180.0
+private const val CARB_PEAK_RATIO = INSULIN_PEAK_MINUTES / INSULIN_DURATION_MINUTES
 
-/** Weighted least-squares quadratic fit (y = a*x^2 + b*x + c, x in minutes
- * since the first reading) via Cramer's rule on the normal equations, with
- * each point weighted by [recencyWeight] so a drop that just started
- * accelerating isn't diluted by flatter data from earlier in the window -
- * in reality the most recent trend is the most informative about what
- * happens next. Falls back to [linearProjection] if the fit is degenerate
- * (e.g. near-duplicate timestamps making the quadratic term unidentifiable). */
-private fun quadraticProjection(
-    sorted: List<GlucoseReading>,
-    thresholdMgdl: Int,
-    horizonMinutes: Int
-): PredictionResult {
-    val t0 = sorted.first().dateMs
-    val xs = sorted.map { (it.dateMs - t0) / 60_000.0 }
-    val ys = sorted.map { it.sgv.toDouble() }
-    val xLast = xs.last()
+/** Full derivation of [activityRemainingFraction]'s curve - see
+ * [MultiBolusInsulinActivityPredictor.sourceUrl]. */
+private const val INSULIN_MODEL_SOURCE_URL =
+    "https://loopkit.github.io/loopdocs/operation/algorithm/insulin-modeling/"
 
-    var s0 = 0.0
-    var s1 = 0.0
-    var s2 = 0.0
-    var s3 = 0.0
-    var s4 = 0.0
-    var sy = 0.0
-    var sxy = 0.0
-    var sx2y = 0.0
-    for (i in xs.indices) {
-        val x = xs[i]
-        val y = ys[i]
-        val w = recencyWeight(xLast - x)
-        val x2 = x * x
-        s0 += w
-        s1 += w * x
-        s2 += w * x2
-        s3 += w * x2 * x
-        s4 += w * x2 * x2
-        sy += w * y
-        sxy += w * x * y
-        sx2y += w * x2 * y
-    }
+/**
+ * Fraction of a single dose (insulin or carbs) still active [minutesSinceDose]
+ * after it was given, per the exponential action curve at
+ * [INSULIN_MODEL_SOURCE_URL].
+ *
+ * Returns 1.0 (fully active) at t=0, decaying to 0.0 (fully used/absorbed) at
+ * t=[durationMinutes], shaped so activity - the *rate* of insulin or carbs
+ * being used, i.e. this function's negative slope - peaks at [peakMinutes]
+ * rather than being front- or back-loaded.
+ */
+private fun activityRemainingFraction(
+    minutesSinceDose: Double,
+    durationMinutes: Double,
+    peakMinutes: Double
+): Double {
+    if (minutesSinceDose <= 0.0) return 1.0
+    if (minutesSinceDose >= durationMinutes) return 0.0
 
-    // s0 (sum of weights) takes the role plain unweighted regression gives
-    // to n (count of points) - unweighted least squares is just the special
-    // case where every weight is 1, so s0 == n.
-    val det = s0 * (s2 * s4 - s3 * s3) - s1 * (s1 * s4 - s3 * s2) + s2 * (s1 * s3 - s2 * s2)
-    if (abs(det) < 1e-6) {
-        return linearProjection(sorted, thresholdMgdl, horizonMinutes)
-    }
+    val tau = peakMinutes * (1 - peakMinutes / durationMinutes) / (1 - 2 * peakMinutes / durationMinutes)
+    val a = 2 * tau / durationMinutes
+    val s = 1 / (1 - a + (1 + a) * exp(-durationMinutes / tau))
+    val t = minutesSinceDose
 
-    val detC = sy * (s2 * s4 - s3 * s3) - s1 * (sxy * s4 - s3 * sx2y) + s2 * (sxy * s3 - s2 * sx2y)
-    val detB = s0 * (sxy * s4 - s3 * sx2y) - sy * (s1 * s4 - s3 * s2) + s2 * (s1 * sx2y - sxy * s2)
-    val detA = s0 * (s2 * sx2y - sxy * s3) - s1 * (s1 * sx2y - sxy * s2) + sy * (s1 * s3 - s2 * s2)
-
-    val c = detC / det
-    val b = detB / det
-    val a = detA / det
-
-    val xHorizon = xLast + horizonMinutes
-    val projected = clampToDisplayable(a * xHorizon * xHorizon + b * xHorizon + c)
-    val minutesToThreshold = solveQuadraticCrossing(a, b, c, thresholdMgdl.toDouble(), xLast, horizonMinutes)
-    return PredictionResult(projected, minutesToThreshold)
+    return 1 - s * (1 - a) * (
+        (t.pow(2) / (tau * durationMinutes * (1 - a)) - t / tau - 1) * exp(-t / tau) + 1
+        )
 }
 
-/** Solves a*x^2 + b*x + (c - threshold) = 0 for the soonest root after
- * [xLast] that falls within the horizon, returned as minutes from now. */
-private fun solveQuadraticCrossing(
-    a: Double,
-    b: Double,
-    c: Double,
-    threshold: Double,
-    xLast: Double,
-    horizonMinutes: Int
-): Double? {
-    val constantTerm = c - threshold
-    val roots = when {
-        abs(a) < 1e-9 -> {
-            if (abs(b) < 1e-9) return null
-            listOf(-constantTerm / b)
-        }
-        else -> {
-            val discriminant = b * b - 4 * a * constantTerm
-            if (discriminant < 0) return null
-            val sqrtDiscriminant = sqrt(discriminant)
-            listOf((-b + sqrtDiscriminant) / (2 * a), (-b - sqrtDiscriminant) / (2 * a))
-        }
-    }
+private fun isActiveInsulin(treatment: TreatmentEvent, last: GlucoseReading): Boolean {
+    val dose = treatment.insulin ?: return false
+    val elapsedMs = last.dateMs - treatment.mills
+    return dose > 0.0 && elapsedMs in 0 until INSULIN_DURATION_MS
+}
 
-    return roots
-        .map { it - xLast }
-        .filter { it > 0 && it <= horizonMinutes }
-        .minOrNull()
+private fun carbDurationMinutes(treatment: TreatmentEvent): Double =
+    treatment.durationMinutes?.takeIf { it > 0.0 } ?: CARB_DEFAULT_DURATION_MINUTES
+
+private fun isActiveCarb(treatment: TreatmentEvent, last: GlucoseReading): Boolean {
+    val carbs = treatment.carbs ?: return false
+    val elapsedMinutes = (last.dateMs - treatment.mills) / 60_000.0
+    return carbs > 0.0 && elapsedMinutes in 0.0..carbDurationMinutes(treatment)
+}
+
+/**
+ * Reads actual bolus and carb history (`treatments`, see backend/README.md)
+ * and evaluates [activityRemainingFraction] at the real elapsed time since
+ * each one. For every active bolus, the fraction of its insulin used between
+ * now and the horizon - `IOB_frac(now) - IOB_frac(now + horizon)` -
+ * converts to an expected glucose drop via the insulin sensitivity factor
+ * (mg/dL per unit); each carb entry's absorbed fraction converts to an
+ * expected glucose rise the same way, via a carb sensitivity factor derived
+ * as `insulinSensitivityFactor / carbRatio` (there's no independently
+ * measured carb sensitivity factor - see `Thresholds.carbRatio`). Every
+ * treatment's contribution is computed independently and summed. See
+ * android-app/README.md's "Where each value comes from" table for exactly
+ * which field feeds which term.
+ *
+ * Does not drive real alerting (see alertEngine.ts server-side for that).
+ */
+class MultiBolusInsulinActivityPredictor : GlucosePredictor {
+    override val name = "Multi-bolus insulin activity"
+    override val description =
+        "Reads actual bolus and carb history from Nightscout and evaluates a " +
+            "standard exponential activity curve at the real elapsed time " +
+            "since each one (see the model details link below), summing each " +
+            "bolus's glucose-lowering effect and each carb entry's glucose-" +
+            "raising effect over the next 30 minutes - overlapping treatments " +
+            "are assumed additive. Carb effect is derived from your insulin " +
+            "sensitivity factor and carb ratio, since there's no independently " +
+            "measured carb sensitivity factor."
+    override val sourceUrl = INSULIN_MODEL_SOURCE_URL
+
+    override fun predict(
+        readings: List<GlucoseReading>,
+        thresholds: Thresholds,
+        horizonMinutes: Int,
+        treatments: List<TreatmentEvent>
+    ): PredictionResult {
+        val last = readings.maxByOrNull { it.dateMs }
+            ?: return PredictionResult(null, null, "No readings yet.")
+        if (thresholds.insulinSensitivityFactor <= 0.0) {
+            return PredictionResult(last.sgv.toDouble(), null, "No insulin sensitivity factor set.")
+        }
+
+        val activeBoluses = treatments.filter { isActiveInsulin(it, last) }
+        val activeCarbs = treatments.filter { isActiveCarb(it, last) }
+        if (activeBoluses.isEmpty() && activeCarbs.isEmpty()) {
+            return PredictionResult(last.sgv.toDouble(), null, "No active insulin or carbs.")
+        }
+
+        val totalInsulinDropMgdl = activeBoluses.sumOf { bolus ->
+            val minutesSinceDose = (last.dateMs - bolus.mills) / 60_000.0
+            val fractionUsedByHorizon =
+                activityRemainingFraction(minutesSinceDose, INSULIN_DURATION_MINUTES, INSULIN_PEAK_MINUTES) -
+                    activityRemainingFraction(
+                        minutesSinceDose + horizonMinutes,
+                        INSULIN_DURATION_MINUTES,
+                        INSULIN_PEAK_MINUTES
+                    )
+            bolus.insulin!! * fractionUsedByHorizon * thresholds.insulinSensitivityFactor
+        }
+
+        val carbSensitivityFactor = if (thresholds.carbRatio > 0.0) {
+            thresholds.insulinSensitivityFactor / thresholds.carbRatio
+        } else {
+            0.0
+        }
+        val totalCarbRiseMgdl = activeCarbs.sumOf { carb ->
+            val minutesSinceDose = (last.dateMs - carb.mills) / 60_000.0
+            val durationMinutes = carbDurationMinutes(carb)
+            val peakMinutes = durationMinutes * CARB_PEAK_RATIO
+            val fractionAbsorbedByHorizon =
+                activityRemainingFraction(minutesSinceDose, durationMinutes, peakMinutes) -
+                    activityRemainingFraction(minutesSinceDose + horizonMinutes, durationMinutes, peakMinutes)
+            carb.carbs!! * fractionAbsorbedByHorizon * carbSensitivityFactor
+        }
+
+        val netDropMgdl = totalInsulinDropMgdl - totalCarbRiseMgdl
+        val projected = clampToDisplayable(last.sgv - netDropMgdl)
+        val effectiveRatePerMinute = -netDropMgdl / horizonMinutes
+        if (effectiveRatePerMinute == 0.0) {
+            return PredictionResult(projected, null)
+        }
+
+        val minutesToThreshold = (thresholds.lowMgdl - last.sgv) / effectiveRatePerMinute
+        val crossesWithinHorizon = minutesToThreshold > 0 && minutesToThreshold <= horizonMinutes
+        return PredictionResult(projected, if (crossesWithinHorizon) minutesToThreshold else null)
+    }
 }

@@ -91,6 +91,35 @@ fun AlertSettingsScreen(patientRepository: PatientRepository, patientId: String,
         )
 
         Spacer(Modifier.height(16.dp))
+        OutlinedTextField(
+            value = state.insulinSensitivityFactor,
+            onValueChange = { v -> viewModel.update { it.copy(insulinSensitivityFactor = v) } },
+            label = { Text("Insulin sensitivity factor (mg/dL per unit)") },
+            modifier = Modifier.fillMaxWidth()
+        )
+        Text(
+            "Used by the IOB-aware predictor on the Predictions tab, not for " +
+                "alerting - how much 1 unit of insulin is expected to lower " +
+                "glucose by.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
+        Spacer(Modifier.height(16.dp))
+        OutlinedTextField(
+            value = state.carbRatio,
+            onValueChange = { v -> viewModel.update { it.copy(carbRatio = v) } },
+            label = { Text("Carb ratio (g of carbs per unit)") },
+            modifier = Modifier.fillMaxWidth()
+        )
+        Text(
+            "Used by the multi-bolus predictor on the Predictions tab, not for " +
+                "alerting - your insulin-to-carb ratio.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
+        Spacer(Modifier.height(16.dp))
         Text("Night window (used to escalate low alerts to critical)", style = MaterialTheme.typography.bodyMedium)
         Spacer(Modifier.height(8.dp))
         Row {

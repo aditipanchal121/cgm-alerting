@@ -7,12 +7,18 @@ import com.aadiinfo.nightwatch.domain.PredictionResult
 import com.aadiinfo.nightwatch.domain.availablePredictors
 import com.aadiinfo.nightwatch.domain.model.GlucoseReading
 import com.aadiinfo.nightwatch.domain.model.Thresholds
+import com.aadiinfo.nightwatch.domain.model.TreatmentEvent
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 
-data class PredictorOutput(val predictorName: String, val description: String, val result: PredictionResult)
+data class PredictorOutput(
+    val predictorName: String,
+    val description: String,
+    val sourceUrl: String?,
+    val result: PredictionResult
+)
 
 data class PredictionsUiState(
     val recentReadings: List<GlucoseReading> = emptyList(),
@@ -33,8 +39,9 @@ class PredictionsViewModel(
 
     val uiState: StateFlow<PredictionsUiState> = combine(
         patientRepository.observeRecentReadings(patientId, RECENT_READINGS_LIMIT),
-        patientRepository.observeThresholds(patientId, uid)
-    ) { recent, thresholds ->
+        patientRepository.observeThresholds(patientId, uid),
+        patientRepository.observeRecentTreatments(patientId, RECENT_TREATMENTS_LIMIT)
+    ) { recent, thresholds, treatments ->
         // Trimmed here against current time on every emission, not via the
         // query's own bound - see observeRecentReadings's doc comment; a
         // fixed date cutoff computed once would drift since this listener
@@ -42,7 +49,12 @@ class PredictionsViewModel(
         val cutoffMs = System.currentTimeMillis() - RECENT_WINDOW_MS
         val readings = recent.filter { it.dateMs >= cutoffMs }
         val outputs = availablePredictors.map { predictor ->
-            PredictorOutput(predictor.name, predictor.description, predictor.predict(readings, thresholds))
+            PredictorOutput(
+                predictor.name,
+                predictor.description,
+                predictor.sourceUrl,
+                predictor.predict(readings, thresholds, treatments = treatments)
+            )
         }
         PredictionsUiState(
             recentReadings = readings,
@@ -57,19 +69,14 @@ class PredictionsViewModel(
         // Matches the backend's own PREDICTED_LOW window (alertEngine.ts calls
         // predictMinutesToThreshold with the same ~6 recent Gluroo entries
         // pollGlucose just fetched, i.e. ~30 min at Gluroo's ~5-min cadence).
-        // This used to be 60 minutes here, which meant this tab's linear
-        // regression was diluting a recent sharp trend with an extra half
-        // hour of older data the backend's alert never saw - the two could
-        // legitimately disagree on whether a threshold crossing is projected,
-        // not because of a bug in either predictor, but because they were
-        // structurally different calculations. Keeping the window matched
-        // means only genuine staleness (the notification reflects the trend
-        // as of whenever it fired; this tab is always live) explains any
-        // remaining disagreement.
         const val RECENT_WINDOW_MS = 30 * 60 * 1000L
 
-        // ~6 readings in 30 min at the usual 5-minute cadence - comfortable
-        // buffer over that, self-bounding regardless of listener age.
+        // ~6 readings in 30 min at the usual 5-minute cadence.
         const val RECENT_READINGS_LIMIT = 12L
+
+        // Covers the insulin duration-of-action window (240 min - see
+        // GlucosePredictor.kt's INSULIN_DURATION_MINUTES) at typical
+        // bolus/carb-correction frequency.
+        const val RECENT_TREATMENTS_LIMIT = 20L
     }
 }

@@ -3,7 +3,7 @@ import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { onDocumentWritten } from 'firebase-functions/v2/firestore';
 import { setGlobalOptions } from 'firebase-functions/v2';
 import * as admin from 'firebase-admin';
-import { fetchRecentReadings, verifyConnection } from './nightscout';
+import { fetchRecentReadings, fetchTreatmentsSince, verifyConnection } from './nightscout';
 import { evaluateAlerts } from './alertEngine';
 import { sendAlertPush, sendReadingStatusPush } from './fcm';
 import { getPatientSecret, storePatientSecret } from './secretManager';
@@ -48,6 +48,8 @@ const DEFAULT_THRESHOLDS: Thresholds = {
   nightWindowEnd: '07:00',
   timezone: 'America/Los_Angeles',
   staleMinutes: 20,
+  insulinSensitivityFactor: 40,
+  carbRatio: 10,
 };
 
 /** The reliability core: polls every registered patient's Gluroo data on a
@@ -120,6 +122,8 @@ async function pollOnePatient(patientId: string, patient: FirebaseFirestore.Docu
       .collection('readings')
       .add({ ...latest, fetchedAt: nowMs });
 
+    await ingestNewTreatments(patientId, patient, apiSecret);
+
     // Always driven by the actual reading, independent of whether it crossed
     // any alert threshold - this keeps a persistent status notification
     // current, separate from the low/high/predictive alert notifications.
@@ -167,6 +171,42 @@ async function pollOnePatient(patientId: string, patient: FirebaseFirestore.Docu
   } catch (err) {
     console.error(`pollGlucose failed for patient ${patientId}`, err);
   }
+}
+
+/** Persists bolus/carb history for future model training (see backend/README.md's
+ * training-data retention note) - kept in a separate collection from
+ * `readings` since it's event data (one entry per real-world bolus/carb
+ * entry), not a per-poll snapshot.
+ *
+ * Fetches only treatments newer than the patient doc's own lastTreatmentMs
+ * cursor, not "the most recent N" every cycle - re-fetching (and rewriting)
+ * the same treatments on every 5-minute poll would bill a Firestore write
+ * per treatment per cycle regardless of whether anything actually changed,
+ * since Firestore charges for a `.set()` call being made at all, not for
+ * the data actually differing from what's already stored. Cursor-based
+ * fetching instead makes the write volume proportional to how often
+ * boluses/carbs actually happen (a handful of times a day), not to the
+ * poll cadence (288 times a day) - and when nothing new happened, this does
+ * zero additional reads or writes beyond the Nightscout API call itself. */
+async function ingestNewTreatments(
+  patientId: string,
+  patient: FirebaseFirestore.DocumentData,
+  apiSecret: string
+): Promise<void> {
+  const lastTreatmentMs = typeof patient.lastTreatmentMs === 'number' ? patient.lastTreatmentMs : null;
+  const newTreatments = await fetchTreatmentsSince(patient.nightscoutUrl, apiSecret, lastTreatmentMs);
+  if (!newTreatments.length) return;
+
+  const patientRef = db().collection('patients').doc(patientId);
+  const batch = db().batch();
+  let maxMs = lastTreatmentMs ?? 0;
+  for (const treatment of newTreatments) {
+    batch.set(patientRef.collection('treatments').doc(treatment.nightscoutId), treatment);
+    maxMs = Math.max(maxMs, treatment.mills);
+  }
+  await batch.commit();
+  await patientRef.update({ lastTreatmentMs: maxMs });
+  console.log(`ingestNewTreatments(${patientId}): stored ${newTreatments.length} new treatment(s)`);
 }
 
 async function updatePairedDevices(

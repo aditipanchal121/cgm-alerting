@@ -19,6 +19,8 @@ data class AlertSettingsUiState(
     val nightWindowStart: String = "22:00",
     val nightWindowEnd: String = "07:00",
     val staleMinutes: String = "20",
+    val insulinSensitivityFactor: String = "40",
+    val carbRatio: String = "10",
     val loading: Boolean = true,
     val saving: Boolean = false,
     val error: String? = null,
@@ -51,6 +53,8 @@ class AlertSettingsViewModel(
                     nightWindowStart = t.nightWindowStart,
                     nightWindowEnd = t.nightWindowEnd,
                     staleMinutes = t.staleMinutes.toString(),
+                    insulinSensitivityFactor = t.insulinSensitivityFactor.toString(),
+                    carbRatio = t.carbRatio.toString(),
                     loading = false
                 )
             }
@@ -73,7 +77,9 @@ class AlertSettingsViewModel(
                 nightWindowStart = uiState.nightWindowStart,
                 nightWindowEnd = uiState.nightWindowEnd,
                 timezone = loadedTimezone,
-                staleMinutes = uiState.staleMinutes.toInt()
+                staleMinutes = uiState.staleMinutes.toInt(),
+                insulinSensitivityFactor = uiState.insulinSensitivityFactor.toDouble(),
+                carbRatio = uiState.carbRatio.toDouble()
             )
         }.getOrNull()
 
