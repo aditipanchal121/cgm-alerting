@@ -3,12 +3,14 @@ import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { onDocumentWritten } from 'firebase-functions/v2/firestore';
 import { setGlobalOptions } from 'firebase-functions/v2';
 import * as admin from 'firebase-admin';
-import { fetchRecentReadings, fetchTreatmentsSince, verifyConnection } from './nightscout';
+import { fetchRecentReadings, fetchTreatmentsSince, verifyConnection, TreatmentEvent } from './nightscout';
 import { evaluateAlerts } from './alertEngine';
 import { sendAlertPush, sendReadingStatusPush } from './fcm';
 import { getPatientSecret, storePatientSecret } from './secretManager';
-import { deleteOldAlerts, deleteOldReadings } from './cleanup';
+import { deleteOldAlerts, deleteOldReadings, deleteOldPredictionAccuracy } from './cleanup';
 import { getFreshExternalIob, pushExternalIobUpdate } from './externalIob';
+import { updateExperimentalPredictions } from './predictionAccuracy';
+import { PREDICT_FUNCTION_SECRET } from './experimentalPredictors';
 import { AlertEvent, GlucoseReading, PatientPhysiology, Thresholds } from './types';
 
 admin.initializeApp();
@@ -48,6 +50,19 @@ const DEFAULT_THRESHOLDS: Thresholds = {
   nightWindowEnd: '07:00',
   timezone: 'America/Los_Angeles',
   staleMinutes: 20,
+  // PREDICTED_LOW excluded by default - it's a linear-extrapolation guess
+  // (see predictor.ts), off until a member explicitly turns it on knowing
+  // that. Every other type defaults on, matching prior behavior.
+  enabledAlertTypes: [
+    'LOW',
+    'URGENT_LOW',
+    'HIGH',
+    'URGENT_HIGH',
+    'IOB_HIGH',
+    'IOB_UNRELIABLE',
+    'STALE_DATA',
+    'COMPRESSION_LOW',
+  ],
 };
 
 const DEFAULT_PHYSIOLOGY: PatientPhysiology = {
@@ -57,11 +72,17 @@ const DEFAULT_PHYSIOLOGY: PatientPhysiology = {
 
 /** The reliability core: polls every registered patient's Gluroo data on a
  * fixed schedule regardless of whether any phone is on, evaluates alerts,
- * and fans out to Firestore history, FCM push, and any paired ESP32. */
-export const pollGlucose = onSchedule('every 5 minutes', async () => {
-  const patientsSnap = await db().collection('patients').get();
-  await Promise.all(patientsSnap.docs.map((doc) => pollOnePatient(doc.id, doc.data())));
-});
+ * and fans out to Firestore history, FCM push, and any paired ESP32.
+ * Declares PREDICT_FUNCTION_SECRET so updateExperimentalPredictions (called
+ * from pollOnePatient below) can authenticate to the Python predictor
+ * function - see experimentalPredictors.ts. */
+export const pollGlucose = onSchedule(
+  { schedule: 'every 5 minutes', secrets: [PREDICT_FUNCTION_SECRET] },
+  async () => {
+    const patientsSnap = await db().collection('patients').get();
+    await Promise.all(patientsSnap.docs.map((doc) => pollOnePatient(doc.id, doc.data())));
+  }
+);
 
 /** Alerts are only ever shown as recent history in the app, and can be
  * written every poll cycle a condition holds - without this, the alerts
@@ -78,11 +99,24 @@ export const cleanupOldReadings = onSchedule('every 24 hours', async () => {
   console.log(`cleanupOldReadings: deleted ${deleted} reading(s) older than the retention window`);
 });
 
+/** Same year-long retention as readings (see cleanup.ts) - this is offline-
+ * analysis data, not left to grow unbounded by accident. */
+export const cleanupOldPredictionAccuracy = onSchedule('every 24 hours', async () => {
+  const deleted = await deleteOldPredictionAccuracy(db());
+  console.log(`cleanupOldPredictionAccuracy: deleted ${deleted} doc(s) older than the retention window`);
+});
+
 async function pollOnePatient(patientId: string, patient: FirebaseFirestore.DocumentData): Promise<void> {
   try {
     const apiSecret = await getPatientSecret(projectId, patientId);
     const readings = await fetchRecentReadings(patient.nightscoutUrl, apiSecret, 6);
-    if (!readings.length) return;
+    if (!readings.length) {
+      // No sensor data at all (e.g. a brand-new setup) - still push so the
+      // persistent notification exists and says so, rather than never
+      // appearing or freezing on stale content forever.
+      await sendReadingStatusPush(patientId, patient.displayName ?? 'Vigil', null);
+      return;
+    }
 
     const nowMs = Date.now();
     const latest = readings[readings.length - 1];
@@ -128,6 +162,16 @@ async function pollOnePatient(patientId: string, patient: FirebaseFirestore.Docu
     // current, separate from the low/high/predictive alert notifications.
     await sendReadingStatusPush(patientId, patient.displayName ?? 'Vigil', latest);
 
+    // Experimental - see predictionAccuracy.ts. Wrapped so a bug here can
+    // never affect real alerting/notifications above, which have already
+    // run by this point.
+    try {
+      const recentTreatments = await fetchRecentTreatmentsForPrediction(patientId);
+      await updateExperimentalPredictions(db(), patientId, readings, physiology, recentTreatments, nowMs);
+    } catch (err) {
+      console.error(`updateExperimentalPredictions failed for patient ${patientId}`, err);
+    }
+
     // Alerts are evaluated per member, not once for the whole patient - each
     // family member sets their own alarm/alert thresholds (see
     // patients/{id}/members/{uid}/thresholds), so the same reading can cross
@@ -169,6 +213,12 @@ async function pollOnePatient(patientId: string, patient: FirebaseFirestore.Docu
     await updatePairedDevices(patientId, eventsByUid, nowMs);
   } catch (err) {
     console.error(`pollGlucose failed for patient ${patientId}`, err);
+    // Nightscout itself may be unreachable this cycle - still push so the
+    // persistent notification doesn't silently freeze on stale content
+    // instead of reflecting that nothing new is available.
+    await sendReadingStatusPush(patientId, patient.displayName ?? 'Vigil', null).catch((pushErr) =>
+      console.error(`sendReadingStatusPush(${patientId}) fallback also failed`, pushErr)
+    );
   }
 }
 
@@ -226,6 +276,26 @@ async function persistNewReadings(
 async function getPhysiology(patientId: string): Promise<PatientPhysiology> {
   const doc = await db().collection('patients').doc(patientId).collection('thresholds').doc('current').get();
   return { ...DEFAULT_PHYSIOLOGY, ...(doc.data() ?? {}) };
+}
+
+// Covers the multi-bolus predictor's insulin duration-of-action window
+// (240 min - see functions-predict/predictors.py) at typical bolus/carb
+// frequency.
+const RECENT_TREATMENTS_FOR_PREDICTION_LIMIT = 20;
+
+/** Reads recent treatments straight from Firestore (not from Nightscout) -
+ * ingestNewTreatments above already keeps that collection current, so this
+ * only needs a bounded read, not another Nightscout API call. Used solely
+ * to feed the experimental predictors (see updateExperimentalPredictions). */
+async function fetchRecentTreatmentsForPrediction(patientId: string): Promise<TreatmentEvent[]> {
+  const snap = await db()
+    .collection('patients')
+    .doc(patientId)
+    .collection('treatments')
+    .orderBy('mills', 'desc')
+    .limit(RECENT_TREATMENTS_FOR_PREDICTION_LIMIT)
+    .get();
+  return snap.docs.map((d) => d.data() as TreatmentEvent);
 }
 
 /** Persists bolus/carb history for future model training (see backend/README.md's

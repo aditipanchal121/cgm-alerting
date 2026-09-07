@@ -26,6 +26,10 @@ export interface Thresholds {
   timezone: string;
   /** how old the latest reading can be before it's flagged as a signal-loss alert */
   staleMinutes: number;
+  /** Which alert types this member wants to be notified about at all - an
+   * event of a type not in this list is never generated for them, not even
+   * logged. Personal, like the rest of Thresholds. */
+  enabledAlertTypes: AlertType[];
 }
 
 /** Physiological facts about the patient, not personal alerting preferences -

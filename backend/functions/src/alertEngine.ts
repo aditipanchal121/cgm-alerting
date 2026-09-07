@@ -41,15 +41,14 @@ export function evaluateAlerts(
 
   const ageMinutes = (nowMs - latest.dateMs) / 60000;
   if (ageMinutes >= thresholds.staleMinutes) {
-    return [
-      makeEvent(
-        'STALE_DATA',
-        'CRITICAL',
-        null,
-        `No new glucose reading in ${Math.round(ageMinutes)} minutes.`,
-        nowMs
-      ),
-    ];
+    const staleEvent = makeEvent(
+      'STALE_DATA',
+      'CRITICAL',
+      null,
+      `No new glucose reading in ${Math.round(ageMinutes)} minutes.`,
+      nowMs
+    );
+    return thresholds.enabledAlertTypes.includes('STALE_DATA') ? [staleEvent] : [];
   }
 
   const events: AlertEvent[] = [];
@@ -93,9 +92,9 @@ export function evaluateAlerts(
           'PREDICTED_LOW',
           'WARNING',
           sgv,
-          `Projected to cross ${thresholds.lowMgdl} mg/dL in ~${Math.round(
+          `PREDICTION: projected to cross ${thresholds.lowMgdl} mg/dL in ~${Math.round(
             prediction.minutesToThreshold
-          )} min.`,
+          )} min (linear extrapolation, not a measured reading).`,
           nowMs
         )
       );
@@ -134,7 +133,7 @@ export function evaluateAlerts(
     }
   }
 
-  return events;
+  return events.filter((event) => thresholds.enabledAlertTypes.includes(event.type));
 }
 
 /** Flags a likely compression low: sensor pressure (classically, lying on
@@ -170,9 +169,9 @@ function detectCompressionLow(
     'COMPRESSION_LOW',
     'WARNING',
     latest.sgv,
-    `Dropped ${dropped} mg/dL in ${minutesElapsed.toFixed(1)} min with only ${iob.toFixed(2)}u IOB` +
-      `${isNight ? ' overnight' : ''} - may be a compression low (sensor pressure) rather than a ` +
-      `true reading. Consider a fingerstick check before treating.`,
+    `PREDICTION: dropped ${dropped} mg/dL in ${minutesElapsed.toFixed(1)} min with only ${iob.toFixed(2)}u IOB` +
+      `${isNight ? ' overnight' : ''} - a heuristic guess that this may be a compression low (sensor ` +
+      `pressure) rather than a true reading, not a certainty. Consider a fingerstick check before treating.`,
     nowMs
   );
 }

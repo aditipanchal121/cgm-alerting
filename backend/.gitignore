@@ -70,3 +70,9 @@ node_modules/
 
 # Exported training data (real family health data - never commit)
 functions/training-data-export/
+
+# Python (functions-predict/)
+__pycache__/
+*.pyc
+venv/
+.venv/

@@ -52,6 +52,23 @@ service cloud.firestore {
         allow write: if false;
       }
 
+      // Latest experimental predictor output - the Android Predictions tab's
+      // only data source (see predictionAccuracy.ts's updateExperimentalPredictions,
+      // which computes this via the Python predict_experimental function).
+      // Overwritten every poll cycle, same pattern as externalIob/current.
+      match /livePredictions/{doc} {
+        allow read: if isMember(patientId);
+        allow write: if false;
+      }
+
+      // Experimental predictor accuracy tracking (see predictionAccuracy.ts) -
+      // purely for later offline analysis, not read by the app itself, so
+      // this is Cloud-Functions-only in both directions rather than
+      // exposing internal experimental data to clients unnecessarily.
+      match /predictionAccuracy/{doc} {
+        allow read, write: if false;
+      }
+
       // Directly-reported IOB (e.g. a paired phone's NotificationListenerService
       // reading a pump app's own notification, bypassing Gluroo's unreliable
       // devicestatus feed). Write access is scoped to exactly one UID - set by

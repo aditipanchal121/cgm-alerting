@@ -2,7 +2,10 @@ package com.aadiinfo.nightwatch.data.repository
 
 import com.aadiinfo.nightwatch.domain.model.AlertEvent
 import com.aadiinfo.nightwatch.domain.model.AlertType
+import com.aadiinfo.nightwatch.domain.model.DEFAULT_ENABLED_ALERT_TYPES
 import com.aadiinfo.nightwatch.domain.model.GlucoseReading
+import com.aadiinfo.nightwatch.domain.model.LivePredictions
+import com.aadiinfo.nightwatch.domain.model.LivePredictorOutput
 import com.aadiinfo.nightwatch.domain.model.Patient
 import com.aadiinfo.nightwatch.domain.model.PatientPhysiology
 import com.aadiinfo.nightwatch.domain.model.Severity
@@ -33,7 +36,11 @@ fun DocumentSnapshot.toThresholds(): Thresholds? {
         nightWindowStart = getString("nightWindowStart") ?: "22:00",
         nightWindowEnd = getString("nightWindowEnd") ?: "07:00",
         timezone = getString("timezone") ?: TimeZone.getDefault().id,
-        staleMinutes = (getLong("staleMinutes") ?: 20L).toInt()
+        staleMinutes = (getLong("staleMinutes") ?: 20L).toInt(),
+        enabledAlertTypes = (get("enabledAlertTypes") as? List<*>)
+            ?.mapNotNull { name -> runCatching { AlertType.valueOf(name.toString()) }.getOrNull() }
+            ?.toSet()
+            ?: DEFAULT_ENABLED_ALERT_TYPES
     )
 }
 
@@ -47,7 +54,8 @@ fun Thresholds.toMap(): Map<String, Any?> = mapOf(
     "nightWindowStart" to nightWindowStart,
     "nightWindowEnd" to nightWindowEnd,
     "timezone" to timezone,
-    "staleMinutes" to staleMinutes
+    "staleMinutes" to staleMinutes,
+    "enabledAlertTypes" to enabledAlertTypes.map { it.name }
 )
 
 fun DocumentSnapshot.toPatientPhysiology(): PatientPhysiology? {
@@ -84,6 +92,26 @@ fun DocumentSnapshot.toTreatmentEvent(): TreatmentEvent? {
         insulin = getDouble("insulin"),
         carbs = getDouble("carbs"),
         durationMinutes = getDouble("durationMinutes")
+    )
+}
+
+fun DocumentSnapshot.toLivePredictions(): LivePredictions? {
+    if (!exists()) return null
+    val rawOutputs = get("outputs") as? List<*> ?: emptyList<Any?>()
+    val outputs = rawOutputs.mapNotNull { raw ->
+        val map = raw as? Map<*, *> ?: return@mapNotNull null
+        LivePredictorOutput(
+            key = map["key"] as? String ?: return@mapNotNull null,
+            name = map["name"] as? String ?: "",
+            description = map["description"] as? String ?: "",
+            sourceUrl = map["sourceUrl"] as? String,
+            projectedValue = (map["projectedValue"] as? Number)?.toDouble(),
+            note = map["note"] as? String
+        )
+    }
+    return LivePredictions(
+        outputs = outputs,
+        updatedAtMs = getLong("updatedAtMs") ?: 0L
     )
 }
 

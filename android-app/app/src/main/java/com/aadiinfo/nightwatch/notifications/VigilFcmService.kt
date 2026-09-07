@@ -46,15 +46,33 @@ class VigilFcmService : FirebaseMessagingService() {
 
     /** Every-poll data message driven by the actual reading (never a
      * predictive alert) - kept separate so it can silently update one
-     * ongoing notification instead of interrupting like low/high alerts do. */
+     * ongoing notification instead of interrupting like low/high alerts do.
+     * Fires every poll cycle regardless of whether Nightscout had anything
+     * to report (see pollOnePatient's sendReadingStatusPush) - sgv is
+     * absent entirely when there's no sensor data at all, not just old, so
+     * this must still update the notification/widget to say so rather than
+     * bailing out and leaving them frozen on whatever they last showed. */
     private fun handleReadingStatus(data: Map<String, String>) {
-        val sgv = data["sgv"]?.toIntOrNull() ?: return
+        val sgv = data["sgv"]?.toIntOrNull()
         val displayName = data["displayName"] ?: "Vigil"
         val arrow = TrendDirection.fromNightscout(data["direction"]).arrow
         val iob = data["iob"]?.toDoubleOrNull()
         val iobUnreliable = data["iobUnreliable"]?.toBoolean() ?: false
+        val dateMs = data["dateMs"]?.toLongOrNull()
+        val ageMinutes = dateMs?.let { (System.currentTimeMillis() - it) / 60_000 }
+        // This message fans out identically to every member regardless of
+        // their own per-member alert staleMinutes (see pollOnePatient's
+        // sendReadingStatusPush - unlike STALE_DATA alerts, it's one shared
+        // broadcast, not personalized), so a fixed cutoff matching the
+        // default alert threshold is used here rather than fetching each
+        // member's own value in this background handler.
+        val isStale = ageMinutes != null && ageMinutes >= STALE_READING_MINUTES
 
-        val title = "$displayName: $sgv mg/dL $arrow"
+        // Never shown as if it's the current reading once stale or absent -
+        // a disconnected/missing CGM sensor should read as "---", not
+        // silently keep displaying the last real number.
+        val glucoseText = if (sgv != null && !isStale) "$sgv mg/dL $arrow" else "---"
+        val title = "$displayName: $glucoseText"
         // Null (not zero) means no source has reported IOB - shown explicitly
         // rather than leaving this blank, so a disconnected/expired pump
         // reads as "not available" instead of looking like the notification
@@ -66,6 +84,12 @@ class VigilFcmService : FirebaseMessagingService() {
         }
 
         NotificationHelper.updateReadingStatus(applicationContext, title, text)
-        GlucoseWidgetProvider.updateFromReading(applicationContext, "$sgv mg/dL $arrow", text)
+        GlucoseWidgetProvider.updateFromReading(applicationContext, glucoseText, text)
+    }
+
+    private companion object {
+        // Matches Thresholds' default staleMinutes (see Models.kt) - the
+        // common case for a family that hasn't customized it.
+        const val STALE_READING_MINUTES = 20L
     }
 }

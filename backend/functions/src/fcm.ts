@@ -81,11 +81,15 @@ export async function sendAlertPush(
 /** Pushes the latest actual reading (not predictive alerts) to every member,
  * so the phone can keep a persistent, silently-updating status notification
  * current even when the app isn't open - separate from the low/high alert
- * notifications, and driven only by real readings each poll cycle. */
+ * notifications. Called every poll cycle regardless of whether Nightscout
+ * actually had anything to report (see pollOnePatient) - [reading] is null
+ * when there's no sensor data at all, so the notification always exists and
+ * stays honest (shows "No reading") instead of going silent or freezing on
+ * stale content the one time it would matter most. */
 export async function sendReadingStatusPush(
   patientId: string,
   displayName: string,
-  reading: GlucoseReading
+  reading: GlucoseReading | null
 ): Promise<void> {
   const tokens = await getMemberTokens(patientId);
   if (!tokens.length) {
@@ -98,16 +102,22 @@ export async function sendReadingStatusPush(
     // Data-only (no `notification` block) - FCM must not auto-post a new
     // notification every 5 minutes. The client updates one ongoing
     // notification in place instead.
-    data: {
-      kind: 'reading',
-      patientId,
-      displayName,
-      sgv: String(reading.sgv),
-      direction: reading.direction,
-      dateMs: String(reading.dateMs),
-      iob: reading.iob !== null ? String(reading.iob) : '',
-      iobUnreliable: String(reading.iobUnreliable ?? false),
-    },
+    data: reading
+      ? {
+          kind: 'reading',
+          patientId,
+          displayName,
+          sgv: String(reading.sgv),
+          direction: reading.direction,
+          dateMs: String(reading.dateMs),
+          iob: reading.iob !== null ? String(reading.iob) : '',
+          iobUnreliable: String(reading.iobUnreliable ?? false),
+        }
+      : {
+          kind: 'reading',
+          patientId,
+          displayName,
+        },
     android: {
       priority: 'high',
     },

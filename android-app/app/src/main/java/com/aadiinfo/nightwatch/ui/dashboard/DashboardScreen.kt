@@ -1,6 +1,7 @@
 package com.aadiinfo.nightwatch.ui.dashboard
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -14,8 +15,10 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -45,6 +48,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.aadiinfo.nightwatch.data.repository.PatientRepository
 import com.aadiinfo.nightwatch.domain.model.GlucoseReading
 import com.aadiinfo.nightwatch.domain.model.Thresholds
+import com.aadiinfo.nightwatch.domain.model.TreatmentEvent
 import com.aadiinfo.nightwatch.domain.model.TrendDirection
 import com.aadiinfo.nightwatch.ui.theme.AlertColors
 import com.aadiinfo.nightwatch.ui.vmFactory
@@ -78,8 +82,7 @@ fun DashboardScreen(patientRepository: PatientRepository, patientId: String, uid
         when {
             state.loading -> CircularProgressIndicator()
             state.reading == null -> Text(
-                "No readings yet - the backend polls Gluroo every few minutes " +
-                    "once credentials are saved.",
+                "No readings yet.",
                 style = MaterialTheme.typography.bodyMedium
             )
             else -> {
@@ -87,14 +90,22 @@ fun DashboardScreen(patientRepository: PatientRepository, patientId: String, uid
                 Spacer(Modifier.height(24.dp))
                 Text("Last 24 hours", style = MaterialTheme.typography.titleSmall)
                 Spacer(Modifier.height(8.dp))
-                GlucoseTrendChart(state.trend, state.thresholds)
+                GlucoseTrendChart(state.trend, state.thresholds, state.treatments)
+                state.percentTimeAtHighRate?.let { percent ->
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "Moving fast (≥ 3 mg/dL/min): ${percent.roundToInt()}% of last 24h",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
         }
     }
 }
 
 @Composable
-private fun GlucoseTrendChart(readings: List<GlucoseReading>, thresholds: Thresholds) {
+private fun GlucoseTrendChart(readings: List<GlucoseReading>, thresholds: Thresholds, treatments: List<TreatmentEvent>) {
     if (readings.size < 2) {
         Text(
             "Not enough readings yet to draw a trend graph.",
@@ -110,8 +121,14 @@ private fun GlucoseTrendChart(readings: List<GlucoseReading>, thresholds: Thresh
     val gridColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.15f)
     val selectionColor = MaterialTheme.colorScheme.onSurface
 
+    // Captured once (not re-read every recomposition) so the graph's right
+    // edge reflects when the dashboard was opened, not just the last actual
+    // reading - otherwise a long gap since the last reading quietly shrinks
+    // the axis to end at that old time instead of visibly leaving blank
+    // space up to now, which reads as "the graph is current" when it isn't.
+    val nowMs = remember { System.currentTimeMillis() }
     val oldestMs = readings.first().dateMs
-    val newestMs = readings.last().dateMs
+    val newestMs = max(readings.last().dateMs, nowMs)
     val fullSpanMs = (newestMs - oldestMs).coerceAtLeast(1L).toFloat()
     // Includes the date, not just the time - a 24h window almost always
     // spans two calendar days, and a bare time on the left edge (e.g.
@@ -162,6 +179,19 @@ private fun GlucoseTrendChart(readings: List<GlucoseReading>, thresholds: Thresh
         40f
     }
     val maxValue = max(300f, ((visibleReadings.maxOfOrNull { it.sgv } ?: 300) + 20).toFloat())
+
+    // Insulin markers in a fixed strip near the top, carbs near the bottom -
+    // deliberately not mapped to glucose value like the reading dots are,
+    // so they read as a separate timeline of events rather than competing
+    // with the glucose line for vertical position.
+    val visibleBoluses = treatments.filter { t ->
+        (t.insulin ?: 0.0) > 0.0 && t.mills in windowStartMs..windowEndMs
+    }
+    val visibleCarbs = treatments.filter { t ->
+        (t.carbs ?: 0.0) > 0.0 && t.mills in windowStartMs..windowEndMs
+    }
+    val insulinMarkerColor = Color(0xFF7B1FA2) // purple
+    val carbMarkerColor = Color(0xFFFFA000) // amber
 
     fun nearestIndexFor(x: Float, width: Float): Int {
         val targetMs = windowStartMs + (x / width).coerceIn(0f, 1f) * effectiveSpan
@@ -270,6 +300,23 @@ private fun GlucoseTrendChart(readings: List<GlucoseReading>, thresholds: Thresh
                             strokeWidth = 1.dp.toPx()
                         )
 
+                        val markerRadius = 2.5.dp.toPx()
+                        val markerInset = 8.dp.toPx()
+                        visibleBoluses.forEach { bolus ->
+                            drawCircle(
+                                color = insulinMarkerColor,
+                                radius = markerRadius,
+                                center = Offset(xFor(bolus.mills), markerInset)
+                            )
+                        }
+                        visibleCarbs.forEach { carb ->
+                            drawCircle(
+                                color = carbMarkerColor,
+                                radius = markerRadius,
+                                center = Offset(xFor(carb.mills), size.height - markerInset)
+                            )
+                        }
+
                         if (visibleReadings.size >= 2) {
                             val path = Path()
                             visibleReadings.forEachIndexed { index, reading ->
@@ -359,6 +406,21 @@ private fun GlucoseTrendChart(readings: List<GlucoseReading>, thresholds: Thresh
             )
         }
 
+        if (visibleBoluses.isNotEmpty() || visibleCarbs.isNotEmpty()) {
+            Spacer(Modifier.height(4.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(start = 40.dp),
+                horizontalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                if (visibleBoluses.isNotEmpty()) {
+                    MarkerLegendItem(insulinMarkerColor, "Insulin")
+                }
+                if (visibleCarbs.isNotEmpty()) {
+                    MarkerLegendItem(carbMarkerColor, "Carbs")
+                }
+            }
+        }
+
         Spacer(Modifier.height(4.dp))
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -390,23 +452,41 @@ private fun GlucoseTrendChart(readings: List<GlucoseReading>, thresholds: Thresh
 
 @Composable
 private fun ReadingCard(reading: GlucoseReading, thresholds: Thresholds) {
-    val color = glucoseColor(reading.sgv, thresholds)
-    val trend = TrendDirection.fromNightscout(reading.direction)
     val ageMinutes = TimeUnit.MILLISECONDS.toMinutes(System.currentTimeMillis() - reading.dateMs)
+    val isStale = ageMinutes >= thresholds.staleMinutes
 
-    Row(verticalAlignment = Alignment.CenterVertically) {
+    if (isStale) {
+        // Never shown as if it's current once stale - a disconnected/missing
+        // CGM sensor should read as "no reading available", not silently
+        // keep displaying the last real number as though it's still live.
         Text(
-            "${reading.sgv}",
-            fontSize = 72.sp,
-            color = color
+            "---",
+            fontSize = 48.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         Text(
-            " ${trend.arrow}",
-            fontSize = 40.sp,
-            color = color
+            "Sensor may be disconnected.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+    } else {
+        val color = glucoseColor(reading.sgv, thresholds)
+        val trend = TrendDirection.fromNightscout(reading.direction)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "${reading.sgv}",
+                fontSize = 72.sp,
+                color = color
+            )
+            Text(
+                " ${trend.arrow}",
+                fontSize = 40.sp,
+                color = color
+            )
+        }
+        Text("mg/dL", style = MaterialTheme.typography.bodyMedium)
     }
-    Text("mg/dL", style = MaterialTheme.typography.bodyMedium)
 
     // Above "Updated" and visually heavier than plain body text - prominent
     // enough to read at a glance, but clearly secondary to the glucose
@@ -423,7 +503,7 @@ private fun ReadingCard(reading: GlucoseReading, thresholds: Thresholds) {
         )
         if (reading.iobUnreliable) {
             Text(
-                "This dropped abruptly from a much higher value - may be unreliable data from Gluroo rather than a true zero.",
+                "May be unreliable data from Gluroo.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.error
             )
@@ -446,7 +526,7 @@ private fun ReadingCard(reading: GlucoseReading, thresholds: Thresholds) {
 
     Spacer(Modifier.height(16.dp))
     Text(
-        if (ageMinutes <= 1) "Updated just now" else "Updated $ageMinutes min ago",
+        "Updated ${formatAgo(ageMinutes)}",
         style = MaterialTheme.typography.bodyMedium,
         color = if (ageMinutes >= thresholds.staleMinutes) MaterialTheme.colorScheme.error
         else MaterialTheme.colorScheme.onSurfaceVariant
@@ -461,3 +541,27 @@ private fun ReadingCard(reading: GlucoseReading, thresholds: Thresholds) {
 }
 
 private fun glucoseColor(sgv: Int, thresholds: Thresholds): Color = AlertColors.forGlucoseZone(sgv, thresholds)
+
+@Composable
+private fun MarkerLegendItem(color: Color, label: String) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(modifier = Modifier.size(8.dp).background(color, CircleShape))
+        Spacer(Modifier.width(4.dp))
+        Text(label, style = MaterialTheme.typography.labelSmall)
+    }
+}
+
+private fun formatAgo(ageMinutes: Long): String = when {
+    ageMinutes <= 1 -> "just now"
+    ageMinutes < 60 -> "$ageMinutes min ago"
+    ageMinutes < 24 * 60 -> {
+        val hours = ageMinutes / 60
+        val minutes = ageMinutes % 60
+        if (minutes == 0L) "$hours hr ago" else "$hours hr $minutes min ago"
+    }
+    else -> {
+        val days = ageMinutes / (24 * 60)
+        val hours = (ageMinutes % (24 * 60)) / 60
+        if (hours == 0L) "$days d ago" else "$days d $hours hr ago"
+    }
+}

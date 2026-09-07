@@ -15,13 +15,34 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.aadiinfo.nightwatch.data.repository.PatientRepository
+import com.aadiinfo.nightwatch.domain.model.AlertType
 import com.aadiinfo.nightwatch.ui.vmFactory
+
+/** Label + optional disclaimer for each toggle in the "Alert types" section
+ * below. PREDICTED_LOW and COMPRESSION_LOW are inferred/heuristic guesses,
+ * not directly measured events - see alertEngine.ts's "PREDICTION:" message
+ * prefix for the same disclaimer on the alert itself. */
+private data class AlertTypeUiInfo(val type: AlertType, val label: String, val disclaimer: String? = null)
+
+private val ALERT_TYPE_UI_INFO = listOf(
+    AlertTypeUiInfo(AlertType.URGENT_LOW, "Urgent low"),
+    AlertTypeUiInfo(AlertType.LOW, "Low"),
+    AlertTypeUiInfo(AlertType.URGENT_HIGH, "Urgent high"),
+    AlertTypeUiInfo(AlertType.HIGH, "High"),
+    AlertTypeUiInfo(AlertType.IOB_HIGH, "IOB high"),
+    AlertTypeUiInfo(AlertType.IOB_UNRELIABLE, "IOB unreliable"),
+    AlertTypeUiInfo(AlertType.STALE_DATA, "Signal loss"),
+    AlertTypeUiInfo(AlertType.PREDICTED_LOW, "Predicted low", "PREDICTION"),
+    AlertTypeUiInfo(AlertType.COMPRESSION_LOW, "Compression low", "PREDICTION")
+)
 
 @Composable
 fun AlertSettingsScreen(patientRepository: PatientRepository, patientId: String, uid: String, isOwner: Boolean) {
@@ -43,8 +64,7 @@ fun AlertSettingsScreen(patientRepository: PatientRepository, patientId: String,
         Text("Your alert thresholds", style = MaterialTheme.typography.headlineSmall)
         Spacer(Modifier.height(4.dp))
         Text(
-            "Personal to this account - each family member sets their own, " +
-                "so your alerts may differ from what others see.",
+            "Personal to this account.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -99,9 +119,7 @@ fun AlertSettingsScreen(patientRepository: PatientRepository, patientId: String,
             modifier = Modifier.fillMaxWidth()
         )
         Text(
-            "Shared for the whole family, not personal to this account - how " +
-                "much 1 unit of insulin is expected to lower glucose by. Used " +
-                "by the Predictions tab, not for alerting." +
+            "Shared for the whole family. Used by the Predictions tab." +
                 if (isOwner) "" else " Only the patient can change this.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -147,6 +165,27 @@ fun AlertSettingsScreen(patientRepository: PatientRepository, patientId: String,
             label = { Text("Signal-loss alert after (minutes)") },
             modifier = Modifier.fillMaxWidth()
         )
+
+        Spacer(Modifier.height(24.dp))
+        Text("Alert types", style = MaterialTheme.typography.titleMedium)
+        Spacer(Modifier.height(8.dp))
+        ALERT_TYPE_UI_INFO.forEach { info ->
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(info.label, style = MaterialTheme.typography.bodyMedium)
+                    info.disclaimer?.let {
+                        Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+                Switch(
+                    checked = info.type in state.enabledAlertTypes,
+                    onCheckedChange = { checked -> viewModel.setAlertTypeEnabled(info.type, checked) }
+                )
+            }
+        }
 
         state.error?.let {
             Spacer(Modifier.height(12.dp))

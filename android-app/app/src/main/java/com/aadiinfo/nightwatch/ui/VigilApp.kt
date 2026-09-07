@@ -410,10 +410,8 @@ private fun PatientIdShareSection(patientId: String, patientDisplayName: String)
     Column(modifier = Modifier.fillMaxWidth().padding(24.dp, 24.dp, 24.dp, 0.dp)) {
         Text("Profile ID (for $patientDisplayName)", style = MaterialTheme.typography.titleSmall)
         Text(
-            "This identifies $patientDisplayName's profile specifically. Share it " +
-                "with a family member's phone so they can follow $patientDisplayName, " +
-                "or so a phone reporting IOB from $patientDisplayName's pump app " +
-                "can be pointed at it.",
+            "Share to let a family member follow $patientDisplayName, or to point " +
+                "a pump-reporting phone at this profile.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )

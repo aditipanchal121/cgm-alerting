@@ -19,7 +19,21 @@ history, push notifications, and any paired ESP32 alarm device.
    by default) the **Secret Manager Admin** IAM role, so `savePatientCredentials`
    can create/update per-patient secrets and `pollGlucose` can read them.
 5. Install dependencies: `cd functions && npm install`.
-6. Deploy: `firebase deploy` (from `backend/`).
+6. Set up the Python codebase's local virtualenv - unlike the TS side,
+   `firebase deploy` does *not* create this for you (it expects one to
+   already exist, the same way it expects `functions/node_modules` to
+   already exist):
+   ```
+   cd functions-predict
+   python -m venv venv
+   venv/Scripts/pip install -r requirements.txt   # venv/bin/pip on macOS/Linux
+   ```
+7. One-time secret for the experimental-predictors function to authenticate
+   itself - see "Experimental predictors" below:
+   `firebase functions:secrets:set PREDICT_FUNCTION_SECRET`.
+8. Deploy: `firebase deploy` (from `backend/`) - this deploys both Cloud
+   Functions codebases (the TS `functions/` and the Python
+   `functions-predict/`, see "Experimental predictors" below).
 
 ## Local development
 
@@ -75,11 +89,90 @@ See `firestore.rules` for the authoritative access model:
   carbs, durationMinutes, notes }`), written only by `pollGlucose` via
   `ingestNewTreatments`. Fetched and written incrementally via the patient
   doc's `lastTreatmentMs` cursor field. Training data, same as
-  `readings`/`externalIobHistory`; also consumed on-device by
-  `GlucosePredictor.kt`'s `MultiBolusInsulinActivityPredictor` (see
-  `android-app/README.md`).
+  `readings`/`externalIobHistory`; also feeds the experimental predictors
+  (see "Experimental predictors" below).
+- `patients/{patientId}/livePredictions/current` - the experimental
+  predictors' latest output, overwritten every poll cycle - the Android
+  Predictions tab's only data source (a plain Firestore read, no on-device
+  computation).
+- `patients/{patientId}/predictionAccuracy` - append-only prediction history
+  + a running per-predictor error summary, for later offline analysis. Not
+  read by the app (see `firestore.rules`).
 - `devices/{deviceId}` - ESP32 pairing: `{ patientId, pairedAt, pairedBy }`.
 - Realtime Database `devices/{deviceId}/alert` - what the ESP32 firmware streams.
+
+## Experimental predictors (`functions-predict/`)
+
+A second, independently-deployed Cloud Functions codebase (Python 3.12 -
+see `firebase.json`), separate from the TypeScript `functions/` codebase
+above. `functions-predict/predictors.py` is the single source of truth for
+5 experimental glucose predictors - no on-device (Kotlin) or TS copy exists
+anymore. It's a pure module: no Firestore access, no Firebase imports at
+all, just `readings + physiology + treatments -> projected values`, so it's
+importable and testable with nothing but plain dicts/lists.
+`functions-predict/main.py` is the only file that knows it's a Cloud
+Function - a thin HTTP adapter, locked down via a shared secret
+(`PREDICT_FUNCTION_SECRET`, Secret Manager-backed) that `pollGlucose` sends
+as a header - not reachable without it, not even by signed-in app users.
+(IAM invoker restriction would be the more idiomatic GCP-native mechanism,
+but setting it needs a Cloud Run IAM permission this project's deploying
+account doesn't have; the shared secret achieves the same property using
+permissions already granted per the setup steps above.) One-time setup:
+`firebase functions:secrets:set PREDICT_FUNCTION_SECRET` (prompts for a
+value - any long random string).
+
+Each poll cycle, `pollGlucose` calls this function once (passing the
+readings/physiology/treatments it already fetched - no extra Firestore
+reads for the inputs) and uses that one result for both `livePredictions`
+and `predictionAccuracy` above - see `predictionAccuracy.ts`'s
+`updateExperimentalPredictions`. Wrapped in a try/catch there, so a bug in
+any of this can never affect real alerting or notifications.
+
+The multi-bolus predictor's math - a standard exponential insulin/carb
+activity curve, evaluated at the real elapsed time since each treatment
+(see [LoopDocs' glucose prediction page](https://loopkit.github.io/loopdocs/operation/algorithm/prediction/)
+for the curve's full derivation):
+
+```
+Frac(t, td, tp) = 1 - S(1-a)( (t^2/(tau*td*(1-a)) - t/tau - 1)e^(-t/tau) + 1 )
+tau = tp(1 - tp/td) / (1 - 2tp/td)
+a = 2*tau/td
+S = 1 / (1 - a + (1+a)e^(-td/tau))
+
+expectedDrop_i = dose_i * (Frac(t_i, 240, 75) - Frac(t_i + 30, 240, 75)) * ISF
+expectedRise_j = carbs_j * (Frac(t_j, td_j, tp_j) - Frac(t_j + 30, td_j, tp_j)) * CSF
+netDrop = sum(expectedDrop_i for each active bolus i) - sum(expectedRise_j for each active carb entry j)
+projected = currentGlucose - netDrop
+```
+
+Where each value comes from:
+
+| Symbol | Meaning | Source |
+|---|---|---|
+| `dose_i` | units of insulin in bolus `i` | `patients/{id}/treatments/{doc}.insulin` |
+| `carbs_j` | grams of carbs in entry `j` | `patients/{id}/treatments/{doc}.carbs` |
+| `mills_i`/`mills_j` | timestamp of the treatment | `patients/{id}/treatments/{doc}.mills` |
+| `t_i`/`t_j` | minutes elapsed since the treatment | `(latestReading.dateMs - mills) / 60000`, recomputed every prediction cycle |
+| `td`, `tp` (insulin) | duration of action / time to peak | fixed constants, `INSULIN_DURATION_MINUTES = 240`, `INSULIN_PEAK_MINUTES = 75`, shared across boluses |
+| `td_j`, `tp_j` (carbs) | absorption duration / time to peak | `patients/{id}/treatments/{doc}.durationMinutes` if present (Nightscout's per-entry `absorptionTime`), else `CARB_DEFAULT_DURATION_MINUTES = 180`; `tp_j` is always `td_j * CARB_PEAK_RATIO` |
+| `ISF` | insulin sensitivity factor (mg/dL lowered per unit) | `patients/{id}/thresholds/current.insulinSensitivityFactor` |
+| `CSF` | carb sensitivity factor (mg/dL raised per gram) | derived as `ISF / carbRatio`, not independently measured/entered - see below |
+| current glucose | most recent reading | the same `readings` array `pollGlucose` already fetched this cycle |
+| `30` | prediction horizon, minutes | fixed - matches every other predictor here |
+
+**Overlapping treatments are additive.** Each active bolus's `expectedDrop_i`
+and each active carb entry's `expectedRise_j` is computed independently
+against its own elapsed time, then summed. A correction bolus given 45
+minutes after a meal bolus doesn't reset or interact with the first one's
+curve; each contributes its own share of the total.
+
+**CSF is derived, not measured.** There's no absolute way to measure "1 gram
+of carbs raises glucose by X mg/dL" directly - different carb types (sugar
+vs. starch, for example) can raise glucose differently, so this derivation
+assumes uniform behavior across carb types as a simplification. What is
+known is the insulin-to-carb ratio used for dosing (`carbRatio`), so
+`CSF = ISF / carbRatio` is used instead - the standard clinical
+relationship between the two ratios, not an independent estimate.
 
 ## Exporting aligned training data
 

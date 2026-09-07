@@ -64,8 +64,16 @@ data class Thresholds(
     val nightWindowStart: String = "22:00",
     val nightWindowEnd: String = "07:00",
     val timezone: String = TimeZone.getDefault().id,
-    val staleMinutes: Int = 20
+    val staleMinutes: Int = 20,
+    // Which alert types this member wants to be notified about at all - an
+    // event of a type not in this set is never generated for them.
+    val enabledAlertTypes: Set<AlertType> = DEFAULT_ENABLED_ALERT_TYPES
 )
+
+// PREDICTED_LOW excluded by default - it's a linear-extrapolation guess (see
+// backend/functions/src/predictor.ts), off until a member explicitly turns
+// it on knowing that. Every other type defaults on.
+val DEFAULT_ENABLED_ALERT_TYPES: Set<AlertType> = AlertType.entries.toSet() - AlertType.PREDICTED_LOW
 
 /** Physiological facts about the patient, not personal alerting preferences -
  * shared across the whole family (patients/{patientId}/thresholds/current)
@@ -76,6 +84,28 @@ data class PatientPhysiology(
     val insulinSensitivityFactor: Double = 40.0,
     // Grams of carbs covered by 1 unit of insulin (insulin-to-carb ratio).
     val carbRatio: Double = 10.0
+)
+
+/** One experimental predictor's latest output - see
+ * backend/functions-predict/predictors.py, the single source of truth for
+ * this math (no on-device copy exists). [projectedValue] is null when the
+ * predictor declined to project anything this cycle; [note] explains why,
+ * shown alongside whatever this call does produce. */
+data class LivePredictorOutput(
+    val key: String = "",
+    val name: String = "",
+    val description: String = "",
+    val sourceUrl: String? = null,
+    val projectedValue: Double? = null,
+    val note: String? = null
+)
+
+/** patients/{patientId}/livePredictions/current - computed once per patient
+ * per poll cycle server-side, overwritten each time (same pattern as
+ * externalIob/current). */
+data class LivePredictions(
+    val outputs: List<LivePredictorOutput> = emptyList(),
+    val updatedAtMs: Long = 0L
 )
 
 data class Patient(

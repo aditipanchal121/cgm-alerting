@@ -80,10 +80,7 @@ fun PredictionsScreen(patientRepository: PatientRepository, patientId: String, u
             Text("Predictions", style = MaterialTheme.typography.headlineSmall)
             Spacer(Modifier.height(4.dp))
             Text(
-                "Beta - on-device forecasting experiments, recomputed automatically whenever " +
-                    "a new reading arrives (about every 5 minutes, matching the backend's poll " +
-                    "cycle). These don't drive alerts; the backend's own predictor does that " +
-                    "independently.",
+                "Beta - experimental, doesn't drive alerts.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -103,7 +100,7 @@ fun PredictionsScreen(patientRepository: PatientRepository, patientId: String, u
                     PredictionChart(state.recentReadings, state.outputs, state.thresholds)
                     Spacer(Modifier.height(8.dp))
                 }
-                items(state.outputs) { output ->
+                items(state.outputs, key = { it.key }) { output ->
                     PredictorCard(output)
                     Spacer(Modifier.height(12.dp))
                 }
@@ -132,7 +129,7 @@ private fun PredictionChart(
 
     val minValue = 40f
     val maxReadingSgv = readings.maxOf { it.sgv }.toFloat()
-    val maxProjected = outputs.mapNotNull { it.result.projectedValue }.maxOfOrNull { it.toFloat() } ?: maxReadingSgv
+    val maxProjected = outputs.mapNotNull { it.projectedValue }.maxOfOrNull { it.toFloat() } ?: maxReadingSgv
     val maxValue = max(300f, max(maxReadingSgv, maxProjected) + 20f)
 
     Column {
@@ -198,7 +195,7 @@ private fun PredictionChart(
 
                     val start = Offset(xFor(lastReading.dateMs), yFor(lastReading.sgv.toFloat()))
                     outputs.forEachIndexed { index, output ->
-                        val projectedValue = output.result.projectedValue ?: return@forEachIndexed
+                        val projectedValue = output.projectedValue ?: return@forEachIndexed
                         val color = PREDICTOR_COLORS[index % PREDICTOR_COLORS.size]
                         val end = Offset(
                             xFor(lastReading.dateMs + horizonMs),
@@ -279,15 +276,22 @@ private fun PredictorCard(output: PredictorOutput) {
                     )
                 }
             }
-            Spacer(Modifier.height(8.dp))
-            val projectedValue = output.result.projectedValue
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "PREDICTION",
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Bold,
+                color = AlertColors.PredictedLow
+            )
+            Spacer(Modifier.height(4.dp))
+            val projectedValue = output.projectedValue
             if (projectedValue != null) {
                 Text(
                     "Projected in 30 min: ${projectedValue.roundToInt()} mg/dL",
                     style = MaterialTheme.typography.bodyMedium
                 )
                 Spacer(Modifier.height(2.dp))
-                val minutesToThreshold = output.result.minutesToThreshold
+                val minutesToThreshold = output.minutesToThreshold
                 Text(
                     if (minutesToThreshold != null) {
                         "Projected to cross the threshold in ~${minutesToThreshold.roundToInt()} min"
@@ -296,12 +300,12 @@ private fun PredictorCard(output: PredictorOutput) {
                     },
                     style = MaterialTheme.typography.bodySmall,
                     // Same blue as a logged PREDICTED_LOW alert (this crossing
-                    // is always toward thresholds.lowMgdl - see GlucosePredictor.kt)
+                    // is always toward thresholds.lowMgdl - see predictors.py)
                     color = if (minutesToThreshold != null) AlertColors.PredictedLow
                     else MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            output.result.note?.let {
+            output.note?.let {
                 if (projectedValue != null) Spacer(Modifier.height(4.dp))
                 Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }

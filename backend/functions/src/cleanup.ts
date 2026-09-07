@@ -57,3 +57,30 @@ export async function deleteOldReadings(db: admin.firestore.Firestore): Promise<
   await bulkWriter.close();
   return deletedCount;
 }
+
+/** Same retention reasoning as readings - this is offline-analysis/training
+ * data (see predictionAccuracy.ts), not an operational log. */
+export const PREDICTION_ACCURACY_RETENTION_MS = 365 * 24 * 60 * 60 * 1000;
+
+/** Deletes prediction-accuracy documents older than the retention window,
+ * across every patient. The "summary" doc has no createdAtMs field, so this
+ * query never matches (and never deletes) it. */
+export async function deleteOldPredictionAccuracy(db: admin.firestore.Firestore): Promise<number> {
+  const cutoffMs = Date.now() - PREDICTION_ACCURACY_RETENTION_MS;
+  const patientsSnap = await db.collection('patients').get();
+
+  const bulkWriter = db.bulkWriter();
+  let deletedCount = 0;
+
+  for (const patientDoc of patientsSnap.docs) {
+    const oldSnap = await patientDoc.ref.collection('predictionAccuracy').where('createdAtMs', '<', cutoffMs).get();
+
+    oldSnap.docs.forEach((doc) => {
+      bulkWriter.delete(doc.ref);
+      deletedCount++;
+    });
+  }
+
+  await bulkWriter.close();
+  return deletedCount;
+}

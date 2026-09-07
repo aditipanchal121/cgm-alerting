@@ -37,54 +37,15 @@ device.
   device ID - the phone doesn't relay alerts to it, both the phone and the
   ESP32 receive alerts independently from the backend.
 
-## Multi-bolus insulin activity predictor (experimental)
+## Predictions tab (experimental)
 
-`domain/GlucosePredictor.kt`'s `MultiBolusInsulinActivityPredictor` is one of
-several predictors on the Predictions (beta) tab; it does not drive real
-alerting (`backend/functions/src/alertEngine.ts` does that, independently).
-It reads actual bolus and carb history and evaluates a standard exponential
-activity curve at the real elapsed time since each one - see the "Model
-details" link on this predictor's info dialog in-app, or
-[LoopDocs' glucose prediction page](https://loopkit.github.io/loopdocs/operation/algorithm/prediction/)
-directly, for the curve's full derivation:
-
-```
-Frac(t, td, tp) = 1 - S(1-a)( (t^2/(tau*td*(1-a)) - t/tau - 1)e^(-t/tau) + 1 )
-tau = tp(1 - tp/td) / (1 - 2tp/td)
-a = 2*tau/td
-S = 1 / (1 - a + (1+a)e^(-td/tau))
-
-expectedDrop_i = dose_i * (Frac(t_i, 240, 75) - Frac(t_i + 30, 240, 75)) * ISF
-expectedRise_j = carbs_j * (Frac(t_j, td_j, tp_j) - Frac(t_j + 30, td_j, tp_j)) * CSF
-netDrop = sum(expectedDrop_i for each active bolus i) - sum(expectedRise_j for each active carb entry j)
-projected = currentGlucose - netDrop
-```
-
-Where each value comes from:
-
-| Symbol | Meaning | Source |
-|---|---|---|
-| `dose_i` | units of insulin in bolus `i` | `patients/{id}/treatments/{doc}.insulin`, fetched via `observeRecentTreatments` |
-| `carbs_j` | grams of carbs in entry `j` | `patients/{id}/treatments/{doc}.carbs` |
-| `mills_i`/`mills_j` | timestamp of the treatment | `patients/{id}/treatments/{doc}.mills` |
-| `t_i`/`t_j` | minutes elapsed since the treatment | `(latestReading.dateMs - mills) / 60000`, recomputed every prediction cycle |
-| `td`, `tp` (insulin) | duration of action / time to peak | fixed constants, `INSULIN_DURATION_MINUTES = 240`, `INSULIN_PEAK_MINUTES = 75`, shared across boluses |
-| `td_j`, `tp_j` (carbs) | absorption duration / time to peak | `patients/{id}/treatments/{doc}.durationMinutes` if present (Nightscout's per-entry `absorptionTime`), else `CARB_DEFAULT_DURATION_MINUTES = 180`; `tp_j` is always `td_j * CARB_PEAK_RATIO` |
-| `ISF` | insulin sensitivity factor (mg/dL lowered per unit) | `PatientPhysiology.insulinSensitivityFactor` - shared for the whole patient (`patients/{id}/thresholds/current`, owner-write only), the same value `IobAwarePredictor` and `AlertSettingsScreen` use |
-| `CSF` | carb sensitivity factor (mg/dL raised per gram) | derived as `ISF / PatientPhysiology.carbRatio`, not independently measured/entered |
-| current glucose | most recent reading | `patients/{id}/readings`, via `observeRecentReadings` |
-| `30` | prediction horizon, minutes | `horizonMinutes` parameter, same as every other predictor in this file |
-
-**Overlapping treatments are additive.** Each active bolus's `expectedDrop_i`
-and each active carb entry's `expectedRise_j` is computed independently
-against its own elapsed time, then summed. A correction bolus given 45
-minutes after a meal bolus doesn't reset or interact with the first one's
-curve; each contributes its own share of the total.
-
-**CSF is derived, not measured.** There's no absolute way to measure "1 gram
-of carbs raises glucose by X mg/dL" directly - different carb types (sugar
-vs. starch, for example) can raise glucose differently, so this derivation
-assumes uniform behavior across carb types as a simplification. What is
-known is the insulin-to-carb ratio used for dosing (`PatientPhysiology.carbRatio`),
-so `CSF = ISF / carbRatio` is used instead - the standard clinical
-relationship between the two ratios, not an independent estimate.
+`ui/predictions/` shows several experimental glucose predictors side by
+side, for comparison only - it does not drive real alerting
+(`backend/functions/src/alertEngine.ts` does that, independently). This app
+does no model computation itself: it reads `patients/{id}/livePredictions/current`,
+written once per patient per poll cycle by the backend. See
+`backend/README.md` for the model math and `backend/functions-predict/` for
+the implementation (the single source of truth - no on-device or TS copy
+exists). The one thing this app does derive locally is each viewer's own
+threshold-crossing estimate (`PredictionsViewModel.deriveMinutesToThreshold`),
+since alert thresholds are personal per member.

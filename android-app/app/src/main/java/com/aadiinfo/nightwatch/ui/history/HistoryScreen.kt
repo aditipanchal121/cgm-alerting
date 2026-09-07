@@ -39,7 +39,7 @@ fun HistoryScreen(patientRepository: PatientRepository, patientId: String, uid: 
 
     if (alerts.isEmpty()) {
         Text(
-            "No alerts yet - based on your own alert thresholds (Settings tab).",
+            "No alerts yet.",
             modifier = Modifier.fillMaxSize().padding(24.dp)
         )
         return

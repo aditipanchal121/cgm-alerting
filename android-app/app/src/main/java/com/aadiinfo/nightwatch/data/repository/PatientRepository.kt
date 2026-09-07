@@ -2,6 +2,7 @@ package com.aadiinfo.nightwatch.data.repository
 
 import com.aadiinfo.nightwatch.domain.model.AlertEvent
 import com.aadiinfo.nightwatch.domain.model.GlucoseReading
+import com.aadiinfo.nightwatch.domain.model.LivePredictions
 import com.aadiinfo.nightwatch.domain.model.Patient
 import com.aadiinfo.nightwatch.domain.model.PatientPhysiology
 import com.aadiinfo.nightwatch.domain.model.Thresholds
@@ -54,6 +55,15 @@ class PatientRepository(
             .snapshotFlow()
             .map { it?.toPatientPhysiology() ?: PatientPhysiology() }
 
+    // Computed once per patient per poll cycle server-side (see
+    // backend/functions-predict/predictors.py) - this is a plain read, no
+    // on-device computation happens for any of these predictors anymore.
+    fun observeLivePredictions(patientId: String): Flow<LivePredictions> =
+        firestore.collection("patients").document(patientId)
+            .collection("livePredictions").document("current")
+            .snapshotFlow()
+            .map { it?.toLivePredictions() ?: LivePredictions() }
+
     fun observeLatestReading(patientId: String): Flow<GlucoseReading?> =
         firestore.collection("patients").document(patientId)
             .collection("readings")
@@ -82,9 +92,9 @@ class PatientRepository(
 
     // Same count-limit-not-date-range reasoning as observeRecentReadings
     // above (SharingStarted.Lazily means a fixed sinceMs cutoff would never
-    // advance) - training-data consumers (see GlucosePredictor.kt's
-    // multi-bolus insulin-activity model) need the most recent boluses
-    // regardless of how long the listener's been attached.
+    // advance) - consumers (the Dashboard's bolus/carb markers) need the
+    // most recent treatments regardless of how long the listener's been
+    // attached.
     fun observeRecentTreatments(patientId: String, limit: Long): Flow<List<TreatmentEvent>> =
         firestore.collection("patients").document(patientId)
             .collection("treatments")

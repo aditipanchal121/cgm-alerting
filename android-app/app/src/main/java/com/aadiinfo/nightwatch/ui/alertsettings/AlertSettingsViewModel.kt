@@ -6,6 +6,8 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.aadiinfo.nightwatch.data.repository.PatientRepository
+import com.aadiinfo.nightwatch.domain.model.AlertType
+import com.aadiinfo.nightwatch.domain.model.DEFAULT_ENABLED_ALERT_TYPES
 import com.aadiinfo.nightwatch.domain.model.PatientPhysiology
 import com.aadiinfo.nightwatch.domain.model.Thresholds
 import kotlinx.coroutines.launch
@@ -22,6 +24,7 @@ data class AlertSettingsUiState(
     val staleMinutes: String = "20",
     val insulinSensitivityFactor: String = "40",
     val carbRatio: String = "10",
+    val enabledAlertTypes: Set<AlertType> = DEFAULT_ENABLED_ALERT_TYPES,
     val loading: Boolean = true,
     val saving: Boolean = false,
     val error: String? = null,
@@ -63,6 +66,7 @@ class AlertSettingsViewModel(
                     nightWindowStart = t.nightWindowStart,
                     nightWindowEnd = t.nightWindowEnd,
                     staleMinutes = t.staleMinutes.toString(),
+                    enabledAlertTypes = t.enabledAlertTypes,
                     loading = !physiologyLoaded
                 )
             }
@@ -83,6 +87,12 @@ class AlertSettingsViewModel(
         uiState = block(uiState).copy(saved = false, error = null)
     }
 
+    fun setAlertTypeEnabled(type: AlertType, enabled: Boolean) {
+        update {
+            it.copy(enabledAlertTypes = if (enabled) it.enabledAlertTypes + type else it.enabledAlertTypes - type)
+        }
+    }
+
     fun save() {
         val thresholds = runCatching {
             Thresholds(
@@ -95,7 +105,8 @@ class AlertSettingsViewModel(
                 nightWindowStart = uiState.nightWindowStart,
                 nightWindowEnd = uiState.nightWindowEnd,
                 timezone = loadedTimezone,
-                staleMinutes = uiState.staleMinutes.toInt()
+                staleMinutes = uiState.staleMinutes.toInt(),
+                enabledAlertTypes = uiState.enabledAlertTypes
             )
         }.getOrNull()
         val physiology = runCatching {
