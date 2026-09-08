@@ -120,7 +120,11 @@ object NotificationHelper {
         }
     }
 
-    fun showAlert(context: Context, title: String, message: String, severity: Severity) {
+    // `wake` (from the backend's WAKE_ALERT_TYPES, see fcm.ts) governs only
+    // the full-screen takeover below - independent of `severity`, which
+    // still picks the channel/loudness. A STALE_DATA or URGENT_HIGH alert
+    // is still CRITICAL-channel-loud without seizing the screen.
+    fun showAlert(context: Context, title: String, message: String, severity: Severity, wake: Boolean) {
         val channelId = when (severity) {
             Severity.CRITICAL -> CHANNEL_CRITICAL
             Severity.WARNING -> CHANNEL_WARNING
@@ -138,7 +142,7 @@ object NotificationHelper {
                 else NotificationCompat.PRIORITY_HIGH
             )
 
-        if (severity == Severity.CRITICAL) {
+        if (wake) {
             val alarmIntent = Intent(context, AlarmActivity::class.java).apply {
                 putExtra(AlarmActivity.EXTRA_TITLE, title)
                 putExtra(AlarmActivity.EXTRA_MESSAGE, message)
@@ -162,7 +166,7 @@ object NotificationHelper {
             NotificationManagerCompat.from(context).notify(System.currentTimeMillis().toInt(), builder.build())
         } catch (_: SecurityException) {
             // POST_NOTIFICATIONS not granted (API 33+); the full-screen alarm
-            // activity above still fires for CRITICAL alerts either way.
+            // activity above still fires for a wake-worthy alert either way.
         }
     }
 }

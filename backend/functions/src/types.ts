@@ -32,10 +32,8 @@ export interface Thresholds {
   enabledAlertTypes: AlertType[];
 }
 
-/** Physiological facts about the patient, not personal alerting preferences -
- * shared across the whole family (patients/{patientId}/thresholds/current)
- * rather than per-member like Thresholds above, since there's only one real
- * insulin sensitivity/carb ratio regardless of who's viewing the app. */
+// Shared family-wide (patients/{patientId}/thresholds/current), unlike
+// per-member Thresholds above.
 export interface PatientPhysiology {
   /** mg/dL that 1 unit of insulin is expected to lower glucose by. */
   insulinSensitivityFactor: number;
@@ -53,9 +51,8 @@ export interface GlucoseReading {
    * likely a Gluroo-side glitch rather than a real zero. The zero is still
    * reported as-is; this only flags it as suspect. */
   iobUnreliable?: boolean;
-  /** Carbs on board, in grams, when Gluroo's devicestatus reports it. Not
-   * currently used by alerting or the on-device predictors - captured for
-   * future model training (see backend/README.md's data retention note). */
+  /** Carbs on board, in grams. Not used by alerting - used by the
+   * experimental multiBolus predictor (predictors.py). */
   cob: number | null;
 }
 

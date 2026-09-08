@@ -1,14 +1,13 @@
 import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
-import { onDocumentWritten } from 'firebase-functions/v2/firestore';
 import { setGlobalOptions } from 'firebase-functions/v2';
 import * as admin from 'firebase-admin';
-import { fetchRecentReadings, fetchTreatmentsSince, verifyConnection, TreatmentEvent } from './nightscout';
+import { fetchRecentReadings, fetchTreatmentsSince, verifyConnection, DeviceStatusPoint } from './nightscout';
 import { evaluateAlerts } from './alertEngine';
-import { sendAlertPush, sendReadingStatusPush } from './fcm';
+import { sendAlertPush, sendReadingStatusPush, getMemberTokens, getMemberTokensByUid } from './fcm';
 import { getPatientSecret, storePatientSecret } from './secretManager';
 import { deleteOldAlerts, deleteOldReadings, deleteOldPredictionAccuracy } from './cleanup';
-import { getFreshExternalIob, pushExternalIobUpdate } from './externalIob';
+import { getExternalIob } from './externalIob';
 import { updateExperimentalPredictions } from './predictionAccuracy';
 import { PREDICT_FUNCTION_SECRET } from './experimentalPredictors';
 import { AlertEvent, GlucoseReading, PatientPhysiology, Thresholds } from './types';
@@ -30,13 +29,8 @@ function rtdb(): admin.database.Database {
 
 const projectId = process.env.GCLOUD_PROJECT!;
 
-/** Temporarily off while testing the externalIob (notification-reader)
- * override path - with this on, a patient whose external reporting isn't
- * yet confirmed working still runs Gluroo's own glitch heuristic every
- * cycle, and an "iobUnreliable" flag from THAT can be confused for a
- * problem with the new reporting path being tested. The heuristic itself
- * (see pollOnePatient) is unchanged and still fully wired up - flip this
- * back to true once external reporting is confirmed reliable. */
+// Off while testing the externalIob override path - flip back to true once
+// external reporting is confirmed reliable.
 const GLUROO_IOB_GLITCH_DETECTION_ENABLED = false;
 
 const DEFAULT_THRESHOLDS: Thresholds = {
@@ -70,12 +64,8 @@ const DEFAULT_PHYSIOLOGY: PatientPhysiology = {
   carbRatio: 10,
 };
 
-/** The reliability core: polls every registered patient's Gluroo data on a
- * fixed schedule regardless of whether any phone is on, evaluates alerts,
- * and fans out to Firestore history, FCM push, and any paired ESP32.
- * Declares PREDICT_FUNCTION_SECRET so updateExperimentalPredictions (called
- * from pollOnePatient below) can authenticate to the Python predictor
- * function - see experimentalPredictors.ts. */
+// Polls every registered patient's Gluroo data on a fixed schedule, evaluates
+// alerts, fans out to Firestore history, FCM push, and any paired ESP32.
 export const pollGlucose = onSchedule(
   { schedule: 'every 5 minutes', secrets: [PREDICT_FUNCTION_SECRET] },
   async () => {
@@ -84,23 +74,17 @@ export const pollGlucose = onSchedule(
   }
 );
 
-/** Alerts are only ever shown as recent history in the app, and can be
- * written every poll cycle a condition holds - without this, the alerts
- * collection grows without bound. */
 export const cleanupOldAlerts = onSchedule('every 24 hours', async () => {
   const deleted = await deleteOldAlerts(db());
   console.log(`cleanupOldAlerts: deleted ${deleted} alert(s) older than the retention window`);
 });
 
-/** Readings are kept for a full year (see cleanup.ts) as a deliberate
- * training-data retention policy, not left to grow unbounded by accident. */
+// Kept a full year (see cleanup.ts) as training data.
 export const cleanupOldReadings = onSchedule('every 24 hours', async () => {
   const deleted = await deleteOldReadings(db());
   console.log(`cleanupOldReadings: deleted ${deleted} reading(s) older than the retention window`);
 });
 
-/** Same year-long retention as readings (see cleanup.ts) - this is offline-
- * analysis data, not left to grow unbounded by accident. */
 export const cleanupOldPredictionAccuracy = onSchedule('every 24 hours', async () => {
   const deleted = await deleteOldPredictionAccuracy(db());
   console.log(`cleanupOldPredictionAccuracy: deleted ${deleted} doc(s) older than the retention window`);
@@ -108,13 +92,20 @@ export const cleanupOldPredictionAccuracy = onSchedule('every 24 hours', async (
 
 async function pollOnePatient(patientId: string, patient: FirebaseFirestore.DocumentData): Promise<void> {
   try {
+    // Fetched once and reused below (sendReadingStatusPush, the per-member
+    // alert loop, sendAlertPush) rather than re-querying members/tokens per use.
+    const membersSnap = await db().collection('patients').doc(patientId).collection('members').get();
+    const uids = membersSnap.docs.map((d) => d.id);
+    const tokensByUid = await getMemberTokensByUid(uids);
+    const allTokens = [...tokensByUid.values()].flat();
+
     const apiSecret = await getPatientSecret(projectId, patientId);
     const readings = await fetchRecentReadings(patient.nightscoutUrl, apiSecret, 6);
     if (!readings.length) {
       // No sensor data at all (e.g. a brand-new setup) - still push so the
       // persistent notification exists and says so, rather than never
       // appearing or freezing on stale content forever.
-      await sendReadingStatusPush(patientId, patient.displayName ?? 'Vigil', null);
+      await sendReadingStatusPush(patientId, patient.displayName ?? 'Vigil', null, allTokens);
       return;
     }
 
@@ -126,26 +117,18 @@ async function pollOnePatient(patientId: string, patient: FirebaseFirestore.Docu
     );
 
     // Gluroo's devicestatus feed has occasionally reset IOB to exactly 0 from
-    // a much higher value within a single 5-minute poll, which isn't
-    // physiologically plausible - insulin doesn't disappear that fast. Flag
-    // (never hide) that specific case so the dashboard can tell family/owner
-    // the zero might be a Gluroo-side glitch, while still showing genuine
-    // zeros (small or no prior IOB) as normal.
-    //
-    // The baseline is the last known *non-zero* IOB, persisted on the patient
-    // doc rather than read from the previous reading - a glitch can produce
-    // several consecutive zero polls in a row, and comparing each one only to
-    // the poll before it would clear the flag after the first zero (0 vs 0
-    // looks like "no drop"). The flag needs to stay up across all of them
-    // until a real non-zero reading confirms Gluroo has recovered.
-    const externalIob = await getFreshExternalIob(db(), patientId, nowMs);
+    // a much higher value within one poll, which isn't physiologically
+    // plausible. Flagged (not hidden) as iobUnreliable, using the last known
+    // *non-zero* IOB rather than the previous reading, since a glitch can
+    // produce several consecutive zero polls the flag needs to stay up through.
+    const externalIob = await getExternalIob(db(), patientId, nowMs);
     if (externalIob !== null) {
-      // A directly-reported IOB (e.g. a paired phone's NotificationListenerService
-      // reading a pump app's own notification) is trusted outright - it isn't
-      // Gluroo's own devicestatus feed, so the glitch-detection heuristic below
-      // doesn't apply to it.
-      latest.iob = externalIob;
-      latest.iobUnreliable = false;
+      // Directly-reported (e.g. a paired phone's NotificationListenerService)
+      // - preferred over Gluroo's field once any report has ever landed,
+      // flagged unreliable rather than falling back once it goes stale,
+      // since Gluroo's own field is frequently absent for this account.
+      latest.iob = externalIob.iob;
+      latest.iobUnreliable = !externalIob.fresh;
     } else if (GLUROO_IOB_GLITCH_DETECTION_ENABLED && latest.iob === 0) {
       const lastNonZeroIob = typeof patient.lastNonZeroIob === 'number' ? patient.lastNonZeroIob : null;
       latest.iobUnreliable = lastNonZeroIob !== null && lastNonZeroIob > 0.5;
@@ -153,45 +136,35 @@ async function pollOnePatient(patientId: string, patient: FirebaseFirestore.Docu
       await db().collection('patients').doc(patientId).update({ lastNonZeroIob: latest.iob });
     }
 
+    await writeCurrentReading(patientId, latest);
+
     const physiology = await getPhysiology(patientId);
     await persistNewReadings(patientId, patient, readings, nowMs, physiology);
     await ingestNewTreatments(patientId, patient, apiSecret);
 
-    // Always driven by the actual reading, independent of whether it crossed
-    // any alert threshold - this keeps a persistent status notification
-    // current, separate from the low/high/predictive alert notifications.
-    await sendReadingStatusPush(patientId, patient.displayName ?? 'Vigil', latest);
+    await sendReadingStatusPush(patientId, patient.displayName ?? 'Vigil', latest, allTokens);
 
     // Experimental - see predictionAccuracy.ts. Wrapped so a bug here can
-    // never affect real alerting/notifications above, which have already
-    // run by this point.
+    // never affect real alerting/notifications above.
     try {
-      const recentTreatments = await fetchRecentTreatmentsForPrediction(patientId);
-      await updateExperimentalPredictions(db(), patientId, readings, physiology, recentTreatments, nowMs);
+      const iobCobHistory = await updateIobCobHistory(patientId, {
+        dateMs: latest.dateMs,
+        iob: latest.iob,
+        cob: latest.cob,
+      });
+      await updateExperimentalPredictions(db(), patientId, readings, physiology, iobCobHistory, nowMs);
     } catch (err) {
       console.error(`updateExperimentalPredictions failed for patient ${patientId}`, err);
     }
 
-    // Alerts are evaluated per member, not once for the whole patient - each
-    // family member sets their own alarm/alert thresholds (see
-    // patients/{id}/members/{uid}/thresholds), so the same reading can cross
-    // one person's limits and not another's. eventsByUid feeds
-    // updatePairedDevices below, so each paired ESP32 alarm buzzes according
-    // to whichever member paired it, not some shared/blended threshold.
-    const membersSnap = await db().collection('patients').doc(patientId).collection('members').get();
+    // Evaluated per member - each has their own thresholds, so the same
+    // reading can cross one person's limits and not another's. eventsByUid
+    // feeds updatePairedDevices below, so each ESP32 buzzes per whoever paired it.
     const eventsByUid = new Map<string, AlertEvent[]>();
 
     for (const memberDoc of membersSnap.docs) {
       const uid = memberDoc.id;
-      const thresholdsDoc = await db()
-        .collection('patients')
-        .doc(patientId)
-        .collection('members')
-        .doc(uid)
-        .collection('thresholds')
-        .doc('current')
-        .get();
-      const thresholds: Thresholds = { ...DEFAULT_THRESHOLDS, ...(thresholdsDoc.data() ?? {}) };
+      const thresholds: Thresholds = { ...DEFAULT_THRESHOLDS, ...(memberDoc.data().thresholds ?? {}) };
 
       const events = evaluateAlerts(readings, thresholds, nowMs);
       eventsByUid.set(uid, events);
@@ -205,7 +178,7 @@ async function pollOnePatient(patientId: string, patient: FirebaseFirestore.Docu
           .collection('alerts')
           .add(event);
         if (event.severity !== 'INFO') {
-          await sendAlertPush(uid, patientId, patient.displayName ?? 'Vigil', event);
+          await sendAlertPush(uid, patientId, patient.displayName ?? 'Vigil', event, tokensByUid.get(uid) ?? []);
         }
       }
     }
@@ -215,31 +188,31 @@ async function pollOnePatient(patientId: string, patient: FirebaseFirestore.Docu
     console.error(`pollGlucose failed for patient ${patientId}`, err);
     // Nightscout itself may be unreachable this cycle - still push so the
     // persistent notification doesn't silently freeze on stale content
-    // instead of reflecting that nothing new is available.
-    await sendReadingStatusPush(patientId, patient.displayName ?? 'Vigil', null).catch((pushErr) =>
+    // instead of reflecting that nothing new is available. Uses the
+    // self-contained getMemberTokens (its own fresh query) rather than
+    // this cycle's tokensByUid above, since the failure that landed here
+    // could have happened before that was ever fetched.
+    const fallbackTokens = await getMemberTokens(patientId).catch(() => [] as string[]);
+    await sendReadingStatusPush(patientId, patient.displayName ?? 'Vigil', null, fallbackTokens).catch((pushErr) =>
       console.error(`sendReadingStatusPush(${patientId}) fallback also failed`, pushErr)
     );
   }
 }
 
-/** Persists every fetched entry newer than the patient doc's own
- * lastReadingMs cursor, not just the single newest one - a poll fetches up
- * to 6 recent entries (see fetchRecentReadings) but previously only ever
- * wrote the newest, so a delayed/failed pollGlucose cycle (a cold start, a
- * quota throttle, an outage) permanently dropped whichever entries it would
- * otherwise have caught up on next time - unlike ingestNewTreatments, which
- * already self-heals this way via lastTreatmentMs. Also prevents writing a
- * duplicate reading doc when Nightscout hasn't posted a new entry since the
- * last poll (same dateMs as already stored) - excluded by the same cursor
- * check.
- *
- * Only the truly-newest entry gets the live externalIob/glitch-detection
- * treatment already applied to `readings[readings.length - 1]` by the
- * caller - backfilled older entries are written as fetched from Nightscout.
- * That's intentional: externalIobHistory is the accurate source for
- * reconstructing historical IOB at any of these entries' exact timestamps
- * (see backend/README.md's training-join note), so there's no need to
- * duplicate that alignment work here on every poll. */
+// Overwritten every cycle regardless of whether this reading is new -
+// the dashboard's single source of truth for "latest reading", so it can
+// never diverge from what sendReadingStatusPush pushes to the notification
+// (same object, same cycle).
+async function writeCurrentReading(patientId: string, reading: GlucoseReading): Promise<void> {
+  await db().collection('patients').doc(patientId).collection('liveReading').doc('current').set(reading);
+}
+
+/** Persists every fetched entry newer than lastReadingMs, not just the
+ * newest - so a delayed/missed poll cycle catches up on entries it would
+ * otherwise permanently drop, and skips writing a duplicate when Nightscout
+ * hasn't posted anything new. Backfilled (non-newest) entries don't get the
+ * live externalIob/glitch-detection treatment - externalIobHistory is the
+ * accurate source for reconstructing historical IOB at those timestamps. */
 async function persistNewReadings(
   patientId: string,
   patient: FirebaseFirestore.DocumentData,
@@ -267,52 +240,33 @@ async function persistNewReadings(
   await patientRef.update({ lastReadingMs: maxMs });
 }
 
-/** Shared per-patient physiology (patients/{patientId}/thresholds/current) -
- * see PatientPhysiology's doc comment for why this is patient-level rather
- * than per-member like Thresholds. Read once per poll (not per-member) and
- * snapshotted onto each new reading (see persistNewReadings) so a training
- * join always knows what was actually in effect at that point in time,
- * regardless of what either value gets changed to later. */
+// Snapshotted onto each new reading (see persistNewReadings) so a training
+// join knows what was actually in effect at that point in time.
 async function getPhysiology(patientId: string): Promise<PatientPhysiology> {
   const doc = await db().collection('patients').doc(patientId).collection('thresholds').doc('current').get();
   return { ...DEFAULT_PHYSIOLOGY, ...(doc.data() ?? {}) };
 }
 
-// Covers the multi-bolus predictor's insulin duration-of-action window
-// (240 min - see functions-predict/predictors.py) at typical bolus/carb
-// frequency.
-const RECENT_TREATMENTS_FOR_PREDICTION_LIMIT = 20;
+// Covers predictors.py's 30-minute IOB/COB trend window even with a missed cycle.
+const IOB_COB_HISTORY_LIMIT = 15;
 
-/** Reads recent treatments straight from Firestore (not from Nightscout) -
- * ingestNewTreatments above already keeps that collection current, so this
- * only needs a bounded read, not another Nightscout API call. Used solely
- * to feed the experimental predictors (see updateExperimentalPredictions). */
-async function fetchRecentTreatmentsForPrediction(patientId: string): Promise<TreatmentEvent[]> {
-  const snap = await db()
-    .collection('patients')
-    .doc(patientId)
-    .collection('treatments')
-    .orderBy('mills', 'desc')
-    .limit(RECENT_TREATMENTS_FOR_PREDICTION_LIMIT)
-    .get();
-  return snap.docs.map((d) => d.data() as TreatmentEvent);
+// Gluroo's devicestatus.json only ever returns a single current snapshot,
+// not real history (confirmed against this account), so this builds the
+// history ourselves: read the rolling window, append this cycle's point,
+// trim, write back. 1 read + 1 write per cycle, only when there's an
+// iob/cob value worth recording. Used solely by predict_multi_bolus.
+async function updateIobCobHistory(patientId: string, point: DeviceStatusPoint): Promise<DeviceStatusPoint[]> {
+  if (point.iob === null && point.cob === null) return [];
+  const historyRef = db().collection('patients').doc(patientId).collection('iobCobHistory').doc('recent');
+  const doc = await historyRef.get();
+  const existing = (doc.data()?.points ?? []) as DeviceStatusPoint[];
+  const updated = [...existing, point].sort((a, b) => a.dateMs - b.dateMs).slice(-IOB_COB_HISTORY_LIMIT);
+  await historyRef.set({ points: updated });
+  return updated;
 }
 
-/** Persists bolus/carb history for future model training (see backend/README.md's
- * training-data retention note) - kept in a separate collection from
- * `readings` since it's event data (one entry per real-world bolus/carb
- * entry), not a per-poll snapshot.
- *
- * Fetches only treatments newer than the patient doc's own lastTreatmentMs
- * cursor, not "the most recent N" every cycle - re-fetching (and rewriting)
- * the same treatments on every 5-minute poll would bill a Firestore write
- * per treatment per cycle regardless of whether anything actually changed,
- * since Firestore charges for a `.set()` call being made at all, not for
- * the data actually differing from what's already stored. Cursor-based
- * fetching instead makes the write volume proportional to how often
- * boluses/carbs actually happen (a handful of times a day), not to the
- * poll cadence (288 times a day) - and when nothing new happened, this does
- * zero additional reads or writes beyond the Nightscout API call itself. */
+// Cursor-based (lastTreatmentMs), not "most recent N" every cycle - keeps
+// write volume proportional to how often boluses/carbs happen, not poll cadence.
 async function ingestNewTreatments(
   patientId: string,
   patient: FirebaseFirestore.DocumentData,
@@ -402,11 +356,8 @@ export const savePatientCredentials = onCall(async (request) => {
   return { ok: true };
 });
 
-/** Shared by claimIobSource and joinPatientAsFollower: adds uid as a
- * follower unless it's already the owner - a no-op either way if uid is
- * already a member, so both callables can call this unconditionally
- * instead of only sometimes granting the account calling them any way to
- * view the patient it just attached to. */
+// Shared by claimIobSource and joinPatientAsFollower - adds uid as a
+// follower unless it's already the owner; safe to call unconditionally.
 async function ensureFollower(
   patientRef: FirebaseFirestore.DocumentReference,
   patientDoc: FirebaseFirestore.DocumentSnapshot,
@@ -421,20 +372,9 @@ async function ensureFollower(
   );
 }
 
-/** Self-service: the caller becomes the trusted IOB source for this patient
- * directly - deliberately no owner-approval step. Knowing the patientId is
- * already this app's de facto shared-secret boundary (the same trust model
- * ESP32 device pairing uses), so requiring a *second* handshake here - the
- * owner manually copying the reporting device's UID - was unnecessary
- * friction for a single-family prototype. Whoever most recently claims it
- * wins; re-claiming (e.g. after switching which phone reports) is just
- * calling this again.
- *
- * Also makes the caller a follower (see ensureFollower) - claiming IOB
- * source used to be entirely independent of the members/roles system,
- * which meant reporting a patient's IOB didn't guarantee the reporting
- * account could see that patient's Dashboard at all, let alone the
- * *correct* one if it had been misconfigured against the wrong patient. */
+// Self-service: caller becomes the trusted IOB source directly, no owner
+// approval - knowing the patientId is already the trust boundary. Whoever
+// claims most recently wins. Also makes the caller a follower (ensureFollower).
 export const claimIobSource = onCall(async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Sign in required.');
   const { patientId } = (request.data ?? {}) as { patientId?: string };
@@ -464,12 +404,8 @@ export const claimIobSource = onCall(async (request) => {
   return { ok: true, displayName: patientDoc.data()?.displayName ?? '' };
 });
 
-/** Self-service: lets a signed-in user become a read-only follower on a
- * patient directly, given only the patientId - the app never had a UI to
- * send/accept an invite in the first place, so this replaces inviteFollower
- * (which nothing ever called) with the same shared-secret trust model as
- * claimIobSource: whoever has the patientId (shared out-of-band, e.g. via
- * the copy button in Settings) can add themselves. */
+// Self-service: whoever has the patientId (shared out-of-band, e.g. the
+// copy button in Settings) can add themselves as a read-only follower.
 export const joinPatientAsFollower = onCall(async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Sign in required.');
   const { patientId, displayName: followerDisplayName } = (request.data ?? {}) as {
@@ -493,15 +429,10 @@ export const joinPatientAsFollower = onCall(async (request) => {
     uid,
     followerDisplayName || request.auth.token.name || request.auth.token.email || 'Follower'
   );
-  // Same reasoning as claimIobSource's return value - confirms which
-  // patient record was just joined rather than a bare "ok".
   return { ok: true, displayName: patientDoc.data()?.displayName ?? '' };
 });
 
-/** Self-service counterpart to joinPatientAsFollower - lets a follower undo
- * a mistaken connection (e.g. the wrong Profile ID) without needing manual
- * intervention. The owner can't leave their own patient this way - there'd
- * be no owner left - so this only ever removes a follower. */
+// Owner can't leave their own patient this way - only ever removes a follower.
 export const leavePatient = onCall(async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Sign in required.');
   const { patientId } = (request.data ?? {}) as { patientId?: string };
@@ -532,20 +463,6 @@ export const leavePatient = onCall(async (request) => {
   return { ok: true };
 });
 
-/** Fires within seconds of the designated IOB source device writing a fresh
- * value - not on the 5-minute pollGlucose schedule - so the persistent
- * notification/widget reflect it as close to immediately as possible. */
-export const onExternalIobWritten = onDocumentWritten(
-  'patients/{patientId}/externalIob/current',
-  async (event) => {
-    const afterSnap = event.data?.after;
-    if (!afterSnap || !afterSnap.exists) return;
-    const iob = afterSnap.data()?.iob;
-    if (typeof iob !== 'number') return;
-    await pushExternalIobUpdate(db(), event.params.patientId, iob);
-  }
-);
-
 /** Links an ESP32's self-reported deviceId to a patient the caller owns. */
 export const pairMcuDevice = onCall(async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Sign in required.');
@@ -558,12 +475,8 @@ export const pairMcuDevice = onCall(async (request) => {
   if (!patientDoc.exists) {
     throw new HttpsError('not-found', 'No patient with that ID.');
   }
-  // Any member can pair a device, not just the owner - pairing an ESP32 is a
-  // personal action (it's whoever's physical alarm clock this is), same
-  // reasoning as alert thresholds being personal rather than owner-only:
-  // updatePairedDevices drives each device off its own pairedBy member's
-  // thresholds, so a follower's alarm in their own room should reflect their
-  // own settings, not require the owner to have set it up for them.
+  // Any member can pair a device, not just the owner - updatePairedDevices
+  // drives each device off its own pairedBy member's thresholds.
   const memberDoc = await db()
     .collection('patients')
     .doc(patientId)

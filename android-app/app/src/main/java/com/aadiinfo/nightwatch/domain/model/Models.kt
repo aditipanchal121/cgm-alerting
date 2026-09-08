@@ -34,17 +34,6 @@ data class GlucoseReading(
     val iobUnreliable: Boolean = false
 )
 
-/** Mirrors a Nightscout treatment entry (bolus or carb correction), as
- * persisted by the backend's `ingestNewTreatments` into
- * patients/{id}/treatments - see backend/README.md's data model section. */
-data class TreatmentEvent(
-    val eventType: String,
-    val mills: Long,
-    val insulin: Double?,
-    val carbs: Double?,
-    val durationMinutes: Double?
-)
-
 data class AlertEvent(
     val id: String = "",
     val type: AlertType,

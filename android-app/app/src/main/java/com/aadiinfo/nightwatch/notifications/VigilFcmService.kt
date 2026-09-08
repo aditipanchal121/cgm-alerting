@@ -12,9 +12,12 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
 /**
- * Receives the FCM data messages pollGlucose sends. CRITICAL alerts arrive
- * as high-priority data messages specifically so this fires (and can raise
- * AlarmActivity) even if the app was killed or the phone was locked.
+ * Receives the FCM data messages pollGlucose sends. Always data-only (no
+ * top-level `notification` field on the backend's message - see fcm.ts) so
+ * this fires, and can raise AlarmActivity for a wake-worthy alert, even if
+ * the app was killed or the phone was locked - a message with a
+ * `notification` field would instead be auto-displayed by Android whenever
+ * the app isn't foregrounded, bypassing this handler entirely.
  */
 class VigilFcmService : FirebaseMessagingService() {
 
@@ -38,10 +41,14 @@ class VigilFcmService : FirebaseMessagingService() {
 
         val severity = runCatching { Severity.valueOf(data["severity"] ?: "") }.getOrDefault(Severity.INFO)
         val type = data["type"] ?: "ALERT"
-        val text = data["message"] ?: message.notification?.body ?: ""
-        val title = message.notification?.title ?: type.replace('_', ' ')
+        val displayName = data["displayName"] ?: "Vigil"
+        val text = data["message"] ?: ""
+        val title = "$displayName: ${type.replace('_', ' ')}"
+        // Which alert types get the full-screen takeover - see fcm.ts's
+        // WAKE_ALERT_TYPES, the one place that policy is decided.
+        val wake = data["wake"]?.toBoolean() ?: false
 
-        NotificationHelper.showAlert(applicationContext, title, text, severity)
+        NotificationHelper.showAlert(applicationContext, title, text, severity, wake)
     }
 
     /** Every-poll data message driven by the actual reading (never a

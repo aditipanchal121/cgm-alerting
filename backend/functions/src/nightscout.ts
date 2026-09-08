@@ -19,6 +19,15 @@ async function getJson<T>(url: string, apiSecret: string): Promise<T> {
   return (await res.json()) as T;
 }
 
+// A point in the IOB/COB history we build ourselves (see updateIobCobHistory
+// in index.ts) - Gluroo's devicestatus.json only ever returns a single
+// current snapshot, not real history, regardless of `count` requested.
+export interface DeviceStatusPoint {
+  dateMs: number;
+  iob: number | null;
+  cob: number | null;
+}
+
 export async function fetchRecentReadings(
   baseUrl: string,
   apiSecret: string,
@@ -32,6 +41,7 @@ export async function fetchRecentReadings(
   if (!entries.length) return [];
 
   const { iob, cob } = await fetchDeviceStatus(trimmedBase, apiSecret);
+
   // Nightscout returns newest-first; callers want oldest-first for trend math.
   return entries
     .slice()
@@ -45,12 +55,10 @@ export async function fetchRecentReadings(
     }));
 }
 
-interface DeviceStatus {
-  iob: number | null;
-  cob: number | null;
-}
-
-async function fetchDeviceStatus(trimmedBase: string, apiSecret: string): Promise<DeviceStatus> {
+async function fetchDeviceStatus(
+  trimmedBase: string,
+  apiSecret: string
+): Promise<{ iob: number | null; cob: number | null }> {
   try {
     const statuses = await getJson<Array<Record<string, any>>>(
       `${trimmedBase}/api/v1/devicestatus.json?count=1`,
@@ -58,7 +66,7 @@ async function fetchDeviceStatus(trimmedBase: string, apiSecret: string): Promis
     );
     const status = statuses[0];
     if (!status) return { iob: null, cob: null };
-    // IOB shape depends on which loop system feeds Gluroo - check known shapes.
+    // IOB/COB shape depends on which loop system feeds Gluroo - check known shapes.
     const iob =
       status?.glurooIob ??
       status?.loop?.iob?.iob ??
@@ -66,11 +74,7 @@ async function fetchDeviceStatus(trimmedBase: string, apiSecret: string): Promis
       (Array.isArray(status?.openaps?.iob) ? status.openaps.iob[0]?.iob : undefined) ??
       status?.pump?.iob?.bolusiob ??
       null;
-    const cob =
-      status?.glurooCob ??
-      status?.loop?.cob ??
-      status?.openaps?.cob ??
-      null;
+    const cob = status?.glurooCob ?? status?.loop?.cob ?? status?.openaps?.cob ?? null;
     return {
       iob: typeof iob === 'number' ? iob : null,
       cob: typeof cob === 'number' ? cob : null,
@@ -93,15 +97,9 @@ export interface TreatmentEvent {
 }
 
 /** Fetches only treatments newer than [sinceMs] (null on first-ever sync,
- * which backfills up to [count] recent ones instead of starting from
- * nothing). Nightscout's REST API supports MongoDB-style `find[field][$op]`
- * query params on any collection, same mechanism used elsewhere in the
- * Nightscout ecosystem for date-ranged queries - this keeps each poll's
- * fetch (and therefore each poll's Firestore writes) proportional to how
- * often boluses/carbs actually happen, not to the 5-minute poll cadence.
- * The client-side mills filter below is a defensive backstop in case that
- * server-side filter is ever ignored (e.g. an older Nightscout version),
- * so a filter that silently no-ops still can't cause duplicate writes. */
+ * which backfills up to [count] recent ones). Uses Nightscout's
+ * `find[field][$op]` query params; the client-side mills filter below is a
+ * backstop in case that server-side filter is ever ignored. */
 export async function fetchTreatmentsSince(
   baseUrl: string,
   apiSecret: string,

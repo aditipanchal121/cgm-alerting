@@ -95,9 +95,28 @@ See `firestore.rules` for the authoritative access model:
   predictors' latest output, overwritten every poll cycle - the Android
   Predictions tab's only data source (a plain Firestore read, no on-device
   computation).
-- `patients/{patientId}/predictionAccuracy` - append-only prediction history
-  + a running per-predictor error summary, for later offline analysis. Not
-  read by the app (see `firestore.rules`).
+- `patients/{patientId}/predictionAccuracy` - append-only, one doc per
+  prediction cycle (`{dateMs}`), keyed and structured so later offline
+  analysis (MAE, RMSE, directional accuracy, full-vs-degraded-data splits,
+  or anything else - see `scripts/exportTrainingData.ts` for the existing
+  pattern of pulling this kind of collection into a CSV) never needs to join
+  across collections - everything about a given prediction lives on its one
+  doc: `predictions` (per predictor key), `notes` (each predictor's `note`
+  at prediction time - null means it had full data that cycle, non-null
+  names what was missing, e.g. multiBolus's "No reliable COB history"),
+  `startSgv` (glucose at prediction time), and once resolved
+  ~30 minutes later, `actualSgv` and `errors` (per predictor,
+  `predicted - actualSgv`). Also a running per-predictor summary at
+  `predictionAccuracy/summary` (`count`, `sumAbsError`, `sumError` -
+  MAE/mean bias, `FieldValue.increment`-only, no extra reads) for a quick
+  live sanity check, not a replacement for the fuller offline analysis the
+  per-doc fields above are for. For later analysis only - not read by the
+  app (see `firestore.rules`).
+- `patients/{patientId}/iobCobHistory/recent` - a rolling window of the last
+  15 `{dateMs, iob, cob}` points, built by `pollGlucose` itself (see
+  "Experimental predictors" below for why) since Gluroo's own devicestatus
+  feed can't supply real history. Used only by `predict_multi_bolus`. Not
+  read by the app.
 - `devices/{deviceId}` - ESP32 pairing: `{ patientId, pairedAt, pairedBy }`.
 - Realtime Database `devices/{deviceId}/alert` - what the ESP32 firmware streams.
 
@@ -108,8 +127,8 @@ see `firebase.json`), separate from the TypeScript `functions/` codebase
 above. `functions-predict/predictors.py` is the single source of truth for
 5 experimental glucose predictors - no on-device (Kotlin) or TS copy exists
 anymore. It's a pure module: no Firestore access, no Firebase imports at
-all, just `readings + physiology + treatments -> projected values`, so it's
-importable and testable with nothing but plain dicts/lists.
+all, just `readings + physiology + iobCobHistory -> projected values`, so
+it's importable and testable with nothing but plain dicts/lists.
 `functions-predict/main.py` is the only file that knows it's a Cloud
 Function - a thin HTTP adapter, locked down via a shared secret
 (`PREDICT_FUNCTION_SECRET`, Secret Manager-backed) that `pollGlucose` sends
@@ -122,49 +141,86 @@ permissions already granted per the setup steps above.) One-time setup:
 value - any long random string).
 
 Each poll cycle, `pollGlucose` calls this function once (passing the
-readings/physiology/treatments it already fetched - no extra Firestore
-reads for the inputs) and uses that one result for both `livePredictions`
-and `predictionAccuracy` above - see `predictionAccuracy.ts`'s
-`updateExperimentalPredictions`. Wrapped in a try/catch there, so a bug in
-any of this can never affect real alerting or notifications.
+readings/physiology it already fetched, plus `iobCobHistory` - see below)
+and uses that one result for both `livePredictions` and `predictionAccuracy`
+above - see `predictionAccuracy.ts`'s `updateExperimentalPredictions`.
+Wrapped in a try/catch there, so a bug in any of this can never affect real
+alerting or notifications. (An earlier version of this also passed
+`treatments` - removed once nothing actually read it anymore, see the
+multi-bolus predictor's math below.)
 
-The multi-bolus predictor's math - a standard exponential insulin/carb
-activity curve, evaluated at the real elapsed time since each treatment
-(see [LoopDocs' glucose prediction page](https://loopkit.github.io/loopdocs/operation/algorithm/prediction/)
-for the curve's full derivation):
+**`iobCobHistory` is a separate input from `readings`, built ourselves in
+Firestore.** `readings` is `pollGlucose`'s live per-cycle CGM fetch, and
+only its single newest entry ever carries a real `iob`/`cob` value - fine
+for the other 4 predictors, but `predict_multi_bolus` needs a *second*,
+older point to compute a trend. Nightscout's `devicestatus.json` can't
+supply that: confirmed against this account, it only ever returns a single
+current snapshot regardless of `count` requested, with no `mills`/
+`created_at` field to even timestamp it by. So `updateIobCobHistory` in
+`index.ts` maintains a small rolling window itself instead -
+`patients/{id}/iobCobHistory/recent` (`{ points: [{dateMs, iob, cob}, ...] }`,
+capped at 15) - read, appended with this cycle's point, trimmed, and
+written back once per cycle (1 read + 1 write, ~288/day each; skipped
+entirely on a cycle where both iob and cob are null, so nothing gets
+written when there's nothing worth recording). The *current* IOB/COB value
+passed to the predictor always comes from `readings` (this cycle's freshest
+value), never from whatever the history's own newest point happens to be -
+see `predict_multi_bolus`'s `_iob_cob_working_set` - so a stale history
+read can't make "now" look staler than it is; it can only fail to find an
+older point, in which case that term is skipped for the cycle rather than
+guessed at.
+
+**The multi-bolus predictor's math** (`predict_multi_bolus`, renamed "IOB/COB
+decay" in the UI) - both insulin and carb effects are estimated the same
+way, by reading the recent slope of the patient's actual reported IOB/COB
+and extrapolating it forward, rather than reconstructing either from
+individual bolus/carb treatment records:
 
 ```
-Frac(t, td, tp) = 1 - S(1-a)( (t^2/(tau*td*(1-a)) - t/tau - 1)e^(-t/tau) + 1 )
-tau = tp(1 - tp/td) / (1 - 2tp/td)
-a = 2*tau/td
-S = 1 / (1 - a + (1+a)e^(-td/tau))
-
-expectedDrop_i = dose_i * (Frac(t_i, 240, 75) - Frac(t_i + 30, 240, 75)) * ISF
-expectedRise_j = carbs_j * (Frac(t_j, td_j, tp_j) - Frac(t_j + 30, td_j, tp_j)) * CSF
-netDrop = sum(expectedDrop_i for each active bolus i) - sum(expectedRise_j for each active carb entry j)
+ΔIOB(30) = IOB_now - max(0, IOB_now + slope_IOB * 30)
+ΔCOB(30) = COB_now - max(0, COB_now + slope_COB * 30)
+netDrop = (ISF * ΔIOB(30)) - (CSF * ΔCOB(30))
 projected = currentGlucose - netDrop
 ```
 
-Where each value comes from:
+Where `slope_IOB`/`slope_COB` are each `min(0, (value_b - value_a) /
+minutes_between(a, b))` for the two most useful eligible points found in
+`iobCobHistory` (preferring one from within the last 30 minutes, falling
+back further back if that's not available) - each `cob` value is rounded to
+a whole gram before use, since Gluroo reports more decimal precision than
+real carb-entry granularity has, and that fake precision was making the
+slope noisier than the underlying signal. The `min(0, ...)` clamp matters:
+a *rising* IOB/COB means a dose/meal was just logged, not decay in
+progress, and naively extrapolating that rise forward would invert the
+predicted effect's sign (a meal just entered would wrongly predict glucose
+*falling*). A rising value is instead treated as no expected change this
+cycle - the following cycles pick up the real decay once it starts.
 
-| Symbol | Meaning | Source |
-|---|---|---|
-| `dose_i` | units of insulin in bolus `i` | `patients/{id}/treatments/{doc}.insulin` |
-| `carbs_j` | grams of carbs in entry `j` | `patients/{id}/treatments/{doc}.carbs` |
-| `mills_i`/`mills_j` | timestamp of the treatment | `patients/{id}/treatments/{doc}.mills` |
-| `t_i`/`t_j` | minutes elapsed since the treatment | `(latestReading.dateMs - mills) / 60000`, recomputed every prediction cycle |
-| `td`, `tp` (insulin) | duration of action / time to peak | fixed constants, `INSULIN_DURATION_MINUTES = 240`, `INSULIN_PEAK_MINUTES = 75`, shared across boluses |
-| `td_j`, `tp_j` (carbs) | absorption duration / time to peak | `patients/{id}/treatments/{doc}.durationMinutes` if present (Nightscout's per-entry `absorptionTime`), else `CARB_DEFAULT_DURATION_MINUTES = 180`; `tp_j` is always `td_j * CARB_PEAK_RATIO` |
-| `ISF` | insulin sensitivity factor (mg/dL lowered per unit) | `patients/{id}/thresholds/current.insulinSensitivityFactor` |
-| `CSF` | carb sensitivity factor (mg/dL raised per gram) | derived as `ISF / carbRatio`, not independently measured/entered - see below |
-| current glucose | most recent reading | the same `readings` array `pollGlucose` already fetched this cycle |
-| `30` | prediction horizon, minutes | fixed - matches every other predictor here |
+This predictor originally summed a standard exponential insulin/carb
+activity curve (see
+[LoopDocs' glucose prediction page](https://loopkit.github.io/loopdocs/operation/algorithm/prediction/))
+over each active `treatments` entry - but that assumed `treatments` was a
+complete ledger, which for this patient it isn't: Gluroo's feed only
+reports `"Correction Bolus"` events, so real meal boluses (and carbs) never
+show up in it, and the curve-based sum was silently underestimating both
+effects. The trade-off of the slope-based approach: it's a local linear
+approximation of each value's true decay curve (which ramps toward a peak,
+then tails off), not the curve itself - reasonable given the 30-minute
+horizon is short relative to either curve's full duration, but it won't
+capture curvature right around a peak the way the full curve would.
 
-**Overlapping treatments are additive.** Each active bolus's `expectedDrop_i`
-and each active carb entry's `expectedRise_j` is computed independently
-against its own elapsed time, then summed. A correction bolus given 45
-minutes after a meal bolus doesn't reset or interact with the first one's
-curve; each contributes its own share of the total.
+**IOB and COB aren't equally trustworthy.** IOB is sourced from the pump's
+own notification (see `externalIob/current` above), independent of Gluroo.
+COB still comes from Gluroo's own `devicestatus.json` feed
+(`glurooCob`/`loop.cob`/`openaps.cob` - see `fetchDeviceStatus` in
+`nightscout.ts`) - the same pipeline whose carb logging is already known to
+be incomplete for this patient, so it isn't guaranteed to be any more
+reliable, just differently sourced. Each term (insulin, carbs) is skipped
+independently whenever its own current value or slope isn't available -
+never backed by a stale or partial guess - and the predictor's `note` field
+says which, if either, was skipped that cycle (recorded on the
+`predictionAccuracy` doc above so a full-vs-degraded split can be
+reconstructed offline later).
 
 **CSF is derived, not measured.** There's no absolute way to measure "1 gram
 of carbs raises glucose by X mg/dL" directly - different carb types (sugar

@@ -1,7 +1,9 @@
 import * as admin from 'firebase-admin';
-import { AlertEvent, GlucoseReading } from './types';
+import { AlertEvent, AlertType, GlucoseReading } from './types';
 
-async function getMemberTokens(patientId: string): Promise<string[]> {
+// Self-contained (queries `members` itself) - used only by pollOnePatient's
+// catch-block fallback, which may fire before membersSnap/tokensByUid exists.
+export async function getMemberTokens(patientId: string): Promise<string[]> {
   const db = admin.firestore();
   const membersSnap = await db.collection('patients').doc(patientId).collection('members').get();
   const uids = membersSnap.docs.map((d) => d.id);
@@ -19,9 +21,20 @@ async function getMemberTokens(patientId: string): Promise<string[]> {
   return tokens;
 }
 
-async function getTokensForUid(uid: string): Promise<string[]> {
-  const tokensSnap = await admin.firestore().collection('users').doc(uid).collection('fcmTokens').get();
-  return tokensSnap.docs.map((t) => t.id);
+// Takes `uids` (caller already has them) rather than querying `members`
+// itself, and returns per-uid so sendAlertPush and sendReadingStatusPush
+// can each use the same fetch without re-querying.
+export async function getMemberTokensByUid(uids: string[]): Promise<Map<string, string[]>> {
+  const db = admin.firestore();
+  const result = new Map<string, string[]>();
+  for (const uid of uids) {
+    const tokensSnap = await db.collection('users').doc(uid).collection('fcmTokens').get();
+    result.set(
+      uid,
+      tokensSnap.docs.map((t) => t.id)
+    );
+  }
+  return result;
 }
 
 /** Logs sendEachForMulticast's per-token result - it never throws on a
@@ -37,38 +50,42 @@ function logMulticastResult(label: string, response: admin.messaging.BatchRespon
   });
 }
 
-/** Pushes an alert to one specific member - each member's alerts are
- * evaluated against their own personal thresholds now (see pollOnePatient),
- * so the same reading can cross one person's limits and not another's;
- * this only ever reaches the one person it was actually generated for. */
+// Which alert types wake the phone with a full-screen takeover (see
+// AlarmActivity), independent of notification channel/severity - severity
+// still governs how loud/urgent the notification itself is, this governs
+// only whether it interrupts. Deliberately narrow: a STALE_DATA or
+// URGENT_HIGH alert (or a LOW re-firing every cycle while already treated
+// and waiting on insulin/carbs to land) is still CRITICAL-channel-loud, but
+// doesn't need to seize the screen the way a fresh urgent low does.
+const WAKE_ALERT_TYPES = new Set<AlertType>(['URGENT_LOW']);
+
+// Pushes an alert to one specific member (each has their own thresholds).
+// `tokens` comes from the caller's getMemberTokensByUid, not fetched here.
+// Data-only (no top-level `notification` field) - a message with one gets
+// auto-displayed by Android whenever the app isn't foregrounded, bypassing
+// VigilFcmService.onMessageReceived() entirely and with it every alert here,
+// wake-worthy or not. The client builds the actual notification itself in
+// every app state, same as sendReadingStatusPush below already does.
 export async function sendAlertPush(
   uid: string,
   patientId: string,
   displayName: string,
-  event: AlertEvent
+  event: AlertEvent,
+  tokens: string[]
 ): Promise<void> {
-  const tokens = await getTokensForUid(uid);
   if (!tokens.length) return;
 
-  const isCritical = event.severity === 'CRITICAL';
   const message: admin.messaging.MulticastMessage = {
     tokens,
-    notification: {
-      title: `${displayName}: ${event.type.replace(/_/g, ' ')}`,
-      body: event.message,
-    },
-    android: {
-      priority: 'high',
-      notification: {
-        channelId: isCritical ? 'critical_alerts' : 'warning_alerts',
-      },
-    },
+    android: { priority: 'high' },
     data: {
       kind: 'alert',
       severity: event.severity,
       type: event.type,
       patientId,
+      displayName,
       message: event.message,
+      wake: String(WAKE_ALERT_TYPES.has(event.type)),
     },
   };
 
@@ -78,20 +95,16 @@ export async function sendAlertPush(
   logMulticastResult(`sendAlertPush(${uid})`, response);
 }
 
-/** Pushes the latest actual reading (not predictive alerts) to every member,
- * so the phone can keep a persistent, silently-updating status notification
- * current even when the app isn't open - separate from the low/high alert
- * notifications. Called every poll cycle regardless of whether Nightscout
- * actually had anything to report (see pollOnePatient) - [reading] is null
- * when there's no sensor data at all, so the notification always exists and
- * stays honest (shows "No reading") instead of going silent or freezing on
- * stale content the one time it would matter most. */
+// Pushes the latest reading to every member, keeping a persistent status
+// notification current even when the app isn't open. Called every poll
+// cycle regardless of outcome - `reading` is null when there's no sensor
+// data, so the notification stays honest instead of freezing on stale content.
 export async function sendReadingStatusPush(
   patientId: string,
   displayName: string,
-  reading: GlucoseReading | null
+  reading: GlucoseReading | null,
+  tokens: string[]
 ): Promise<void> {
-  const tokens = await getMemberTokens(patientId);
   if (!tokens.length) {
     console.warn(`sendReadingStatusPush(${patientId}): no tokens, nothing sent`);
     return;

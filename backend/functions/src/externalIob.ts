@@ -1,13 +1,9 @@
 import * as admin from 'firebase-admin';
-import { sendReadingStatusPush } from './fcm';
-import { GlucoseReading } from './types';
 
-/** How fresh an externally-reported IOB (from a paired phone's
- * NotificationListenerService reading a pump app's own notification, e.g.
- * Omnipod 5) needs to be to be trusted over Gluroo's own devicestatus IOB,
- * which has been unreliable. Past this age, pollGlucose falls back to
- * Gluroo's own value rather than trusting a source that's gone quiet. */
-export const EXTERNAL_IOB_FRESHNESS_MS = 15 * 60 * 1000;
+// Two poll cycles' worth of buffer - Cloud Scheduler's actual invocation
+// cadence can drift a bit (deploys, cold starts), and this keeps that
+// drift from falsely flagging a still-current report as stale.
+export const EXTERNAL_IOB_FRESHNESS_MS = 10 * 60 * 1000;
 
 interface ExternalIobDoc {
   iob: number;
@@ -15,13 +11,23 @@ interface ExternalIobDoc {
   reportedBy: string;
 }
 
-/** Returns the externally-reported IOB for a patient if one exists and is
- * still fresh, else null (meaning: fall back to Gluroo's own IOB). */
-export async function getFreshExternalIob(
+export interface ExternalIobResult {
+  iob: number;
+  fresh: boolean;
+}
+
+/** Returns the externally-reported IOB for a patient, or null if none has
+ * ever been reported (pollOnePatient falls back to Gluroo's own IOB field
+ * in that case only). Once a report exists, it's preferred over Gluroo's
+ * field indefinitely - `fresh` says whether it's within the freshness
+ * window, so a stale report is flagged unreliable rather than discarded,
+ * since Gluroo's own field is frequently absent for this account and isn't
+ * a trustworthy fallback either. */
+export async function getExternalIob(
   db: admin.firestore.Firestore,
   patientId: string,
   nowMs: number
-): Promise<number | null> {
+): Promise<ExternalIobResult | null> {
   const doc = await db
     .collection('patients')
     .doc(patientId)
@@ -30,56 +36,5 @@ export async function getFreshExternalIob(
     .get();
   const data = doc.data() as ExternalIobDoc | undefined;
   if (!data || typeof data.iob !== 'number' || typeof data.reportedAt !== 'number') return null;
-  if (nowMs - data.reportedAt > EXTERNAL_IOB_FRESHNESS_MS) return null;
-  return data.iob;
-}
-
-/** Fired immediately (via a Firestore trigger, not the 5-minute pollGlucose
- * schedule) whenever a fresh externally-reported IOB is written, so the
- * persistent notification/widget *and* the in-app Dashboard update within
- * seconds instead of waiting for the next poll cycle. Recombines the new
- * IOB with whichever sgv/direction the last poll already wrote - this
- * never re-fetches Gluroo.
- *
- * Patches the existing latest `readings` doc in place rather than adding a
- * new one - adding a new doc every time IOB changes (which can be far more
- * often than every 5 minutes) would pollute the training-data cadence with
- * entries that repeat a stale sgv/direction just to carry a fresher iob.
- * `externalIobHistory` is already the accurate source for a training join
- * (see backend/README.md), so patching this doc only needs to be good
- * enough for live display, not a perfectly-timestamped training record. */
-export async function pushExternalIobUpdate(
-  db: admin.firestore.Firestore,
-  patientId: string,
-  iob: number
-): Promise<void> {
-  const patientDoc = await db.collection('patients').doc(patientId).get();
-  const patient = patientDoc.data();
-  if (!patient) {
-    console.warn(`pushExternalIobUpdate(${patientId}): no such patient`);
-    return;
-  }
-
-  const latestReadingSnap = await db
-    .collection('patients')
-    .doc(patientId)
-    .collection('readings')
-    .orderBy('dateMs', 'desc')
-    .limit(1)
-    .get();
-  const latestReadingDoc = latestReadingSnap.docs[0];
-  const latestReading = latestReadingDoc?.data() as GlucoseReading | undefined;
-  if (!latestReadingDoc || !latestReading) {
-    console.warn(`pushExternalIobUpdate(${patientId}): no readings yet, nothing to recombine with`);
-    return;
-  }
-
-  const reading: GlucoseReading = {
-    ...latestReading,
-    iob,
-    iobUnreliable: false,
-  };
-
-  await latestReadingDoc.ref.update({ iob, iobUnreliable: false });
-  await sendReadingStatusPush(patientId, patient.displayName ?? 'Vigil', reading);
+  return { iob: data.iob, fresh: nowMs - data.reportedAt <= EXTERNAL_IOB_FRESHNESS_MS };
 }

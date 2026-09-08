@@ -16,77 +16,64 @@ service cloud.firestore {
     }
 
     match /patients/{patientId} {
-      // Read uses resource.data directly (not isMember's exists() check) because
-      // Firestore can only authorize a *list* query (patientsForUser's
-      // array-contains query, not just single-document gets) when the rule is
-      // provable from the query's own filter + the candidate document's own
-      // fields - it won't trust a cross-document exists() lookup keyed by a
-      // wildcard that varies per result, which is what isMember() does.
+      // resource.data, not isMember()'s exists() check - Firestore can only
+      // authorize a list query (patientsForUser's array-contains) when the
+      // rule is provable from the query filter + the document's own fields.
       allow read: if isSignedIn() && request.auth.uid in resource.data.memberUids;
       allow create: if isSignedIn() && request.resource.data.ownerUid == request.auth.uid;
       allow update, delete: if isOwner(patientId);
 
-      // Physiological facts about the patient (insulin sensitivity factor,
-      // carb ratio) - shared across the whole family, unlike members/{uid}/thresholds
-      // below which is each member's own personal alert configuration. Every
-      // member can read it, but only the owner (the patient himself, who
-      // creates the record everyone else follows - see createPatient) can
-      // set it, not any follower.
+      // Physiological facts (ISF, carb ratio) - shared family-wide, unlike
+      // members/{uid}/thresholds below. Owner-writable only.
       match /thresholds/{doc} {
         allow read: if isMember(patientId);
         allow write: if isOwner(patientId);
       }
 
-      // Glucose/IOB history: written only by Cloud Functions via the Admin SDK,
-      // which bypasses these rules entirely - clients never write readings directly.
+      // Written only by Cloud Functions via the Admin SDK.
       match /readings/{doc} {
         allow read: if isMember(patientId);
         allow write: if false;
       }
 
-      // Bolus/carb treatment history, mirrored from Nightscout for future
-      // model training (see ingestNewTreatments) - same as readings, written
-      // only by Cloud Functions.
       match /treatments/{doc} {
         allow read: if isMember(patientId);
         allow write: if false;
       }
 
-      // Latest experimental predictor output - the Android Predictions tab's
-      // only data source (see predictionAccuracy.ts's updateExperimentalPredictions,
-      // which computes this via the Python predict_experimental function).
-      // Overwritten every poll cycle, same pattern as externalIob/current.
+      // Experimental predictors' latest output - Android Predictions tab's
+      // data source (see predictionAccuracy.ts).
       match /livePredictions/{doc} {
         allow read: if isMember(patientId);
         allow write: if false;
       }
 
-      // Experimental predictor accuracy tracking (see predictionAccuracy.ts) -
-      // purely for later offline analysis, not read by the app itself, so
-      // this is Cloud-Functions-only in both directions rather than
-      // exposing internal experimental data to clients unnecessarily.
+      // Overwritten every poll cycle - Dashboard's single source of truth
+      // for the latest reading (see index.ts's writeCurrentReading).
+      match /liveReading/{doc} {
+        allow read: if isMember(patientId);
+        allow write: if false;
+      }
+
+      // Offline analysis only - not read by the app.
       match /predictionAccuracy/{doc} {
         allow read, write: if false;
       }
 
-      // Directly-reported IOB (e.g. a paired phone's NotificationListenerService
-      // reading a pump app's own notification, bypassing Gluroo's unreliable
-      // devicestatus feed). Write access is scoped to exactly one UID - set by
-      // the owner via the setIobSource callable, never by clients directly -
-      // deliberately independent of the members/roles system above, since
-      // being trusted to report IOB isn't the same permission as being a
-      // follower or owner.
+      // Rolling IOB/COB window used only by predict_multi_bolus (see index.ts).
+      match /iobCobHistory/{doc} {
+        allow read, write: if false;
+      }
+
+      // Directly-reported IOB (paired phone's NotificationListenerService).
+      // Write scoped to whichever UID the owner set via setIobSource.
       match /externalIob/{doc} {
         allow read: if isMember(patientId);
         allow write: if isSignedIn() &&
           get(/databases/$(database)/documents/patients/$(patientId)).data.iobSourceUid == request.auth.uid;
       }
 
-      // Append-only log of every externalIob value (not just the latest),
-      // for building timestamp-aligned training data from patients/{id}/readings
-      // and this history together - see OmnipodIobListenerService. Same UID
-      // gate as externalIob above, but create-only: nothing should ever edit
-      // or remove a past entry.
+      // Append-only log of every externalIob value, for training-data joins.
       match /externalIobHistory/{doc} {
         allow read: if isMember(patientId);
         allow create: if isSignedIn() &&
@@ -94,8 +81,6 @@ service cloud.firestore {
         allow update, delete: if false;
       }
 
-      // Family membership: the patient's creator bootstraps themselves as
-      // owner; only the owner can add/remove/re-role members after that.
       match /members/{uid} {
         allow read: if isMember(patientId);
         allow create: if isSignedIn() && (
@@ -104,22 +89,12 @@ service cloud.firestore {
             get(/databases/$(database)/documents/patients/$(patientId)).data.ownerUid == request.auth.uid)
           || isOwner(patientId)
         );
-        allow update, delete: if isOwner(patientId);
+        allow update: if isOwner(patientId) ||
+          (isSignedIn() && request.auth.uid == uid &&
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['thresholds']));
+        allow delete: if isOwner(patientId);
 
-        // Personal alert thresholds - each member sets their own alarm
-        // trigger points and display preferences. Private even from the
-        // owner: these aren't shared family config, they're one person's
-        // own alert settings, same as nobody else configures your phone's
-        // notification settings for you.
-        match /thresholds/{doc} {
-          allow read, write: if isSignedIn() && request.auth.uid == uid;
-        }
-
-        // Personal alert history - each entry was generated against this
-        // member's own thresholds, so it means something different per
-        // person and is private to them the same way. Written only by
-        // Cloud Functions (Admin SDK bypasses these rules); no client
-        // writes, no acknowledge step.
+        // Written only by Cloud Functions.
         match /alerts/{doc} {
           allow read: if isSignedIn() && request.auth.uid == uid;
           allow create, update, delete: if false;

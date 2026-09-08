@@ -61,10 +61,6 @@ class PredictionsViewModel(
         patientRepository.observeThresholds(patientId, uid),
         patientRepository.observeLivePredictions(patientId)
     ) { recent, thresholds, livePredictions ->
-        // Trimmed here against current time on every emission, not via the
-        // query's own bound - see observeRecentReadings's doc comment; a
-        // fixed date cutoff computed once would drift since this listener
-        // now lives for the whole app session (SharingStarted.Lazily).
         val cutoffMs = System.currentTimeMillis() - RECENT_WINDOW_MS
         val readings = recent.filter { it.dateMs >= cutoffMs }
         val currentSgv = readings.lastOrNull()?.sgv
@@ -91,12 +87,8 @@ class PredictionsViewModel(
     }.stateIn(viewModelScope, SharingStarted.Lazily, PredictionsUiState())
 
     private companion object {
-        // Matches the backend's own PREDICTED_LOW window (alertEngine.ts calls
-        // predictMinutesToThreshold with the same ~6 recent Gluroo entries
-        // pollGlucose just fetched, i.e. ~30 min at Gluroo's ~5-min cadence).
+        // Matches the backend's PREDICTED_LOW window (alertEngine.ts).
         const val RECENT_WINDOW_MS = 30 * 60 * 1000L
-
-        // ~6 readings in 30 min at the usual 5-minute cadence.
         const val RECENT_READINGS_LIMIT = 12L
     }
 }

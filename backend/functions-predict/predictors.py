@@ -1,20 +1,24 @@
- """Experimental glucose predictors - the single source of truth for this
+"""Experimental glucose predictors - the single source of truth for this
 math. Ported faithfully from the Android app's original GlucosePredictor.kt
 (now removed - see android-app/README.md). Pure functions only: no
 Firestore, no Firebase, no I/O of any kind, so this is importable and
 testable with nothing but plain dicts/lists as input.
 
 Every predictor has the same shape:
-    predict(readings, physiology, treatments, horizon_minutes) -> (projected_value, note)
+    predict(readings, physiology, horizon_minutes, iob_cob_history)
+        -> (projected_value, note)
 
-readings:    list of {"sgv": float, "direction": str, "dateMs": int,
-                       "iob": float | None, "iobUnreliable": bool}
-physiology:  {"insulinSensitivityFactor": float, "carbRatio": float}
-treatments:  list of {"mills": int, "insulin": float | None,
-                       "carbs": float | None, "durationMinutes": float | None}
+readings:        list of {"sgv": float, "direction": str, "dateMs": int,
+                           "iob": float | None, "iobUnreliable": bool,
+                           "cob": float | None} - this cycle's live CGM
+                 fetch; only the newest entry typically carries a real
+                 iob/cob (see fetchRecentReadings in nightscout.ts).
+physiology:      {"insulinSensitivityFactor": float, "carbRatio": float}
+iob_cob_history: same shape as `readings`, but a wider window of the same
+                 devicestatus feed (see fetchRecentReadings), with real
+                 iob/cob at each entry's own timestamp. Only
+                 predict_multi_bolus uses this.
 """
-
-import math
 
 MIN_DISPLAYABLE_MGDL = 40.0
 MAX_DISPLAYABLE_MGDL = 400.0
@@ -39,11 +43,11 @@ def _linear_projection(sorted_r: list[dict], horizon_minutes: float) -> float | 
     return _clamp(last["sgv"] + rate_per_minute * horizon_minutes)
 
 
-def predict_linear(readings, physiology, treatments, horizon_minutes):
+def predict_linear(readings, physiology, horizon_minutes, iob_cob_history):
     return _linear_projection(_sorted_by_time(readings), horizon_minutes), None
 
 
-def predict_iob_aware(readings, physiology, treatments, horizon_minutes):
+def predict_iob_aware(readings, physiology, horizon_minutes, iob_cob_history):
     sorted_r = _sorted_by_time(readings)
     if len(sorted_r) < 2:
         return (sorted_r[0]["sgv"] if sorted_r else 0.0), None
@@ -81,7 +85,7 @@ def _windowed_readings(sorted_r: list[dict], window_minutes: float | None) -> li
     return windowed if len(windowed) >= 2 else sorted_r
 
 
-def predict_direction_aware(readings, physiology, treatments, horizon_minutes):
+def predict_direction_aware(readings, physiology, horizon_minutes, iob_cob_history):
     sorted_r = _sorted_by_time(readings)
     if len(sorted_r) < 2:
         return (sorted_r[0]["sgv"] if sorted_r else 0.0), None
@@ -107,7 +111,7 @@ KALMAN_PROCESS_VARIANCE_POSITION = 0.25
 KALMAN_PROCESS_VARIANCE_VELOCITY = 0.01
 
 
-def predict_kalman(readings, physiology, treatments, horizon_minutes):
+def predict_kalman(readings, physiology, horizon_minutes, iob_cob_history):
     sorted_r = _sorted_by_time(readings)
     if len(sorted_r) < 2:
         return (sorted_r[0]["sgv"] if sorted_r else 0.0), None
@@ -148,91 +152,134 @@ def predict_kalman(readings, physiology, treatments, horizon_minutes):
     return _clamp(glucose + velocity * horizon_minutes), None
 
 
-# Same constants/curve as the original MultiBolusInsulinActivityPredictor -
-# the exponential insulin-action model documented at
-# https://loopkit.github.io/loopdocs/operation/algorithm/prediction/.
-INSULIN_DURATION_MINUTES = 240.0
-INSULIN_PEAK_MINUTES = 75.0
-INSULIN_DURATION_MS = INSULIN_DURATION_MINUTES * 60_000
-CARB_DEFAULT_DURATION_MINUTES = 180.0
-CARB_PEAK_RATIO = INSULIN_PEAK_MINUTES / INSULIN_DURATION_MINUTES
+# How far back to look for a second reliable reading (IOB or COB) to pair
+# with the current one when estimating its current slope - see
+# _observed_iob_slope_per_minute / _observed_cob_slope_per_minute.
+TREND_WINDOW_MINUTES = 30.0
 
 
-def _activity_remaining_fraction(minutes_since_dose: float, duration_minutes: float, peak_minutes: float) -> float:
-    if minutes_since_dose <= 0:
-        return 1.0
-    if minutes_since_dose >= duration_minutes:
-        return 0.0
-
-    tau = (peak_minutes * (1 - peak_minutes / duration_minutes)) / (1 - (2 * peak_minutes) / duration_minutes)
-    a = (2 * tau) / duration_minutes
-    s = 1 / (1 - a + (1 + a) * math.exp(-duration_minutes / tau))
-    t = minutes_since_dose
-
-    return 1 - s * (1 - a) * (
-        (t**2 / (tau * duration_minutes * (1 - a)) - t / tau - 1) * math.exp(-t / tau) + 1
-    )
+def _eligible_iob_readings(sorted_r: list[dict]) -> list[dict]:
+    return [r for r in sorted_r if r.get("iob") is not None and not r.get("iobUnreliable")]
 
 
-def _is_active_insulin(treatment: dict, last_ms: int) -> bool:
-    dose = treatment.get("insulin")
-    if dose is None or dose <= 0:
-        return False
-    elapsed_ms = last_ms - treatment["mills"]
-    return 0 <= elapsed_ms < INSULIN_DURATION_MS
+def _slope_per_minute(windowed: list[dict], value_key: str, round_values: bool) -> float | None:
+    first, last = windowed[0], windowed[-1]
+    minutes_elapsed = (last["dateMs"] - first["dateMs"]) / 60_000.0
+    if minutes_elapsed <= 0:
+        return None
+    first_value = round(first[value_key]) if round_values else first[value_key]
+    last_value = round(last[value_key]) if round_values else last[value_key]
+    return (last_value - first_value) / minutes_elapsed
 
 
-def _carb_duration_minutes(treatment: dict) -> float:
-    duration = treatment.get("durationMinutes")
-    return duration if duration and duration > 0 else CARB_DEFAULT_DURATION_MINUTES
+def _windowed_for_trend(eligible: list[dict]) -> list[dict] | None:
+    if len(eligible) < 2:
+        return None
+    cutoff_ms = eligible[-1]["dateMs"] - TREND_WINDOW_MINUTES * 60_000
+    windowed = [r for r in eligible if r["dateMs"] >= cutoff_ms]
+    return windowed if len(windowed) >= 2 else eligible[-2:]
 
 
-def _is_active_carb(treatment: dict, last_ms: int) -> bool:
-    carbs = treatment.get("carbs")
-    if carbs is None or carbs <= 0:
-        return False
-    elapsed_minutes = (last_ms - treatment["mills"]) / 60_000.0
-    return 0 <= elapsed_minutes <= _carb_duration_minutes(treatment)
+def _observed_iob_slope_per_minute(sorted_r: list[dict]) -> float | None:
+    """IOB's rate of change (units/minute). Prefers a pair within
+    TREND_WINDOW_MINUTES, falls back to the last two eligible points if
+    that window has too few (IOB only updates on change, so a flat stretch
+    can span longer than the window)."""
+    windowed = _windowed_for_trend(_eligible_iob_readings(sorted_r))
+    return _slope_per_minute(windowed, "iob", round_values=False) if windowed else None
 
 
-def predict_multi_bolus(readings, physiology, treatments, horizon_minutes):
+def _eligible_cob_readings(sorted_r: list[dict]) -> list[dict]:
+    return [r for r in sorted_r if r.get("cob") is not None]
+
+
+def _observed_cob_slope_per_minute(sorted_r: list[dict]) -> float | None:
+    """Same as _observed_iob_slope_per_minute, for COB. Each value is
+    rounded to a whole gram first - Gluroo's reported decimal precision
+    exceeds real carb-entry granularity and was making the slope noisier
+    than the underlying signal."""
+    windowed = _windowed_for_trend(_eligible_cob_readings(sorted_r))
+    return _slope_per_minute(windowed, "cob", round_values=True) if windowed else None
+
+
+def _iob_cob_working_set(current: dict, history: list[dict]) -> list[dict]:
+    """Current IOB/COB always comes from `current` (this cycle's `readings`),
+    never from history's own newest entry - history only supplies an older
+    point to pair with it, so a stale history fetch can't make "now" look
+    staler than it is."""
+    older = [r for r in (history or []) if r["dateMs"] < current["dateMs"]]
+    return _sorted_by_time(older + [current])
+
+
+def predict_multi_bolus(readings, physiology, horizon_minutes, iob_cob_history):
+    """`predicted glucose = current - ISF * ΔIOB(horizon) + CSF * ΔCOB(horizon)`
+    (a falling IOB releases glucose-lowering effect; a falling COB releases
+    glucose-raising effect) - same core equation OpenAPS/Loop use. ΔIOB/ΔCOB
+    come from the recent slope of reported IOB/COB (see
+    _observed_iob_slope_per_minute), not from individual treatment records -
+    Gluroo's treatments feed for this patient only logs "Correction Bolus"
+    events, so real meal boluses/carbs were invisible to a per-record sum.
+
+    IOB is sourced from the pump's own notification (externalIob/current),
+    independent of Gluroo; COB still comes from Gluroo's devicestatus feed,
+    so it's not necessarily any more reliable, just differently sourced."""
     if not readings:
         return None, "No readings yet."
-    last = max(readings, key=lambda r: r["dateMs"])
+    sorted_r = _sorted_by_time(readings)
+    last = sorted_r[-1]
 
     isf = physiology.get("insulinSensitivityFactor", 0.0)
     if isf <= 0:
         return float(last["sgv"]), "No insulin sensitivity factor set."
 
-    active_boluses = [t for t in treatments if _is_active_insulin(t, last["dateMs"])]
-    active_carbs = [t for t in treatments if _is_active_carb(t, last["dateMs"])]
-    if not active_boluses and not active_carbs:
-        return float(last["sgv"]), "No active insulin or carbs."
+    working_set = _iob_cob_working_set(last, iob_cob_history)
 
-    total_insulin_drop = 0.0
-    for bolus in active_boluses:
-        minutes_since_dose = (last["dateMs"] - bolus["mills"]) / 60_000.0
-        fraction_used = _activity_remaining_fraction(
-            minutes_since_dose, INSULIN_DURATION_MINUTES, INSULIN_PEAK_MINUTES
-        ) - _activity_remaining_fraction(
-            minutes_since_dose + horizon_minutes, INSULIN_DURATION_MINUTES, INSULIN_PEAK_MINUTES
-        )
-        total_insulin_drop += bolus["insulin"] * fraction_used * isf
+    # Clamped to <= 0: a *rising* IOB/COB means a dose/meal was just logged,
+    # not decay in progress - the linear extrapolation below is only valid
+    # for the decay phase, and blindly extending a fresh upward blip would
+    # invert the sign of its predicted effect (e.g. a meal just entered
+    # would predict glucose falling, not rising). Treated as no expected
+    # change this cycle instead; the following cycles will pick up the real
+    # decay once it starts.
+    current_iob = last.get("iob")
+    raw_iob_slope = (
+        _observed_iob_slope_per_minute(working_set)
+        if current_iob is not None and not last.get("iobUnreliable")
+        else None
+    )
+    iob_slope_per_minute = min(0.0, raw_iob_slope) if raw_iob_slope is not None else None
 
+    current_cob = last.get("cob")
     carb_ratio = physiology.get("carbRatio", 0.0)
     carb_sensitivity_factor = (isf / carb_ratio) if carb_ratio > 0 else 0.0
+    raw_cob_slope = (
+        _observed_cob_slope_per_minute(working_set)
+        if current_cob is not None and carb_sensitivity_factor > 0
+        else None
+    )
+    cob_slope_per_minute = min(0.0, raw_cob_slope) if raw_cob_slope is not None else None
+    if iob_slope_per_minute is None and cob_slope_per_minute is None:
+        return float(last["sgv"]), "No reliable IOB or COB history."
+
+    total_insulin_drop = 0.0
+    if iob_slope_per_minute is not None:
+        projected_iob = max(0.0, current_iob + iob_slope_per_minute * horizon_minutes)
+        total_insulin_drop = (current_iob - projected_iob) * isf
+
     total_carb_rise = 0.0
-    for carb in active_carbs:
-        minutes_since_dose = (last["dateMs"] - carb["mills"]) / 60_000.0
-        duration_minutes = _carb_duration_minutes(carb)
-        peak_minutes = duration_minutes * CARB_PEAK_RATIO
-        fraction_absorbed = _activity_remaining_fraction(
-            minutes_since_dose, duration_minutes, peak_minutes
-        ) - _activity_remaining_fraction(minutes_since_dose + horizon_minutes, duration_minutes, peak_minutes)
-        total_carb_rise += carb["carbs"] * fraction_absorbed * carb_sensitivity_factor
+    if cob_slope_per_minute is not None:
+        current_cob_rounded = round(current_cob)
+        projected_cob = max(0.0, current_cob_rounded + cob_slope_per_minute * horizon_minutes)
+        total_carb_rise = (current_cob_rounded - projected_cob) * carb_sensitivity_factor
 
     net_drop = total_insulin_drop - total_carb_rise
-    return _clamp(last["sgv"] - net_drop), None
+    if iob_slope_per_minute is not None and cob_slope_per_minute is not None:
+        note = None
+    elif iob_slope_per_minute is not None:
+        note = "No reliable COB history - carb effect not modeled this cycle."
+    else:
+        note = "No reliable IOB history - insulin effect not modeled this cycle."
+    return _clamp(last["sgv"] - net_drop), note
 
 
 PREDICTORS = [
@@ -294,18 +341,21 @@ PREDICTORS = [
     },
     {
         "key": "multiBolus",
-        "name": "Multi-bolus insulin activity",
+        "name": "IOB/COB decay",
         "description": (
-            "Reads actual bolus and carb history from Nightscout and evaluates a "
-            "standard exponential activity curve at the real elapsed time "
-            "since each one (see the model details link below), summing each "
-            "bolus's glucose-lowering effect and each carb entry's glucose-"
-            "raising effect over the next 30 minutes - overlapping treatments "
-            "are assumed additive. Carb effect is derived from your insulin "
-            "sensitivity factor and carb ratio, since there's no independently "
-            "measured carb sensitivity factor."
+            "Reads the recent slope of your actual reported IOB and COB and "
+            "extrapolates each forward, converting the change to a glucose "
+            "effect via your insulin sensitivity factor and carb ratio - "
+            "rather than reconstructing either from individual bolus/carb "
+            "records, which is more robust to gaps in what Nightscout/Gluroo "
+            "logs as treatment history. IOB comes from your pump's own "
+            "notification, independent of Gluroo; COB still comes from "
+            "Gluroo's own feed, so it isn't guaranteed to be any more "
+            "reliable than the treatment history it would otherwise use - "
+            "just differently sourced. Falls back to modeling only whichever "
+            "of the two has reliable data this cycle."
         ),
-        "sourceUrl": "https://loopkit.github.io/loopdocs/operation/algorithm/prediction/",
+        "sourceUrl": None,
         "predict": predict_multi_bolus,
     },
 ]

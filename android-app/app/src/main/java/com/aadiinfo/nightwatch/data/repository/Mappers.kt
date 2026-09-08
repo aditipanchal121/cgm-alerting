@@ -10,7 +10,6 @@ import com.aadiinfo.nightwatch.domain.model.Patient
 import com.aadiinfo.nightwatch.domain.model.PatientPhysiology
 import com.aadiinfo.nightwatch.domain.model.Severity
 import com.aadiinfo.nightwatch.domain.model.Thresholds
-import com.aadiinfo.nightwatch.domain.model.TreatmentEvent
 import com.google.firebase.firestore.DocumentSnapshot
 import java.util.TimeZone
 
@@ -24,25 +23,23 @@ fun DocumentSnapshot.toPatient(): Patient? {
     )
 }
 
-fun DocumentSnapshot.toThresholds(): Thresholds? {
-    if (!exists()) return null
-    return Thresholds(
-        units = getString("units") ?: "mgdl",
-        lowMgdl = (getLong("lowMgdl") ?: 80L).toInt(),
-        urgentLowMgdl = (getLong("urgentLowMgdl") ?: 65L).toInt(),
-        highMgdl = (getLong("highMgdl") ?: 200L).toInt(),
-        urgentHighMgdl = (getLong("urgentHighMgdl") ?: 260L).toInt(),
-        iobThreshold = getDouble("iobThreshold") ?: 8.0,
-        nightWindowStart = getString("nightWindowStart") ?: "22:00",
-        nightWindowEnd = getString("nightWindowEnd") ?: "07:00",
-        timezone = getString("timezone") ?: TimeZone.getDefault().id,
-        staleMinutes = (getLong("staleMinutes") ?: 20L).toInt(),
-        enabledAlertTypes = (get("enabledAlertTypes") as? List<*>)
-            ?.mapNotNull { name -> runCatching { AlertType.valueOf(name.toString()) }.getOrNull() }
-            ?.toSet()
-            ?: DEFAULT_ENABLED_ALERT_TYPES
-    )
-}
+@Suppress("UNCHECKED_CAST")
+fun Map<String, Any?>.toThresholds(): Thresholds = Thresholds(
+    units = this["units"] as? String ?: "mgdl",
+    lowMgdl = (this["lowMgdl"] as? Number)?.toInt() ?: 80,
+    urgentLowMgdl = (this["urgentLowMgdl"] as? Number)?.toInt() ?: 65,
+    highMgdl = (this["highMgdl"] as? Number)?.toInt() ?: 200,
+    urgentHighMgdl = (this["urgentHighMgdl"] as? Number)?.toInt() ?: 260,
+    iobThreshold = (this["iobThreshold"] as? Number)?.toDouble() ?: 8.0,
+    nightWindowStart = this["nightWindowStart"] as? String ?: "22:00",
+    nightWindowEnd = this["nightWindowEnd"] as? String ?: "07:00",
+    timezone = this["timezone"] as? String ?: TimeZone.getDefault().id,
+    staleMinutes = (this["staleMinutes"] as? Number)?.toInt() ?: 20,
+    enabledAlertTypes = (this["enabledAlertTypes"] as? List<*>)
+        ?.mapNotNull { name -> runCatching { AlertType.valueOf(name.toString()) }.getOrNull() }
+        ?.toSet()
+        ?: DEFAULT_ENABLED_ALERT_TYPES
+)
 
 fun Thresholds.toMap(): Map<String, Any?> = mapOf(
     "units" to units,
@@ -80,18 +77,6 @@ fun DocumentSnapshot.toGlucoseReading(): GlucoseReading? {
         dateMs = getLong("dateMs") ?: 0L,
         iob = getDouble("iob"),
         iobUnreliable = getBoolean("iobUnreliable") ?: false
-    )
-}
-
-fun DocumentSnapshot.toTreatmentEvent(): TreatmentEvent? {
-    if (!exists()) return null
-    val mills = getLong("mills") ?: return null
-    return TreatmentEvent(
-        eventType = getString("eventType") ?: "Unknown",
-        mills = mills,
-        insulin = getDouble("insulin"),
-        carbs = getDouble("carbs"),
-        durationMinutes = getDouble("durationMinutes")
     )
 }
 
