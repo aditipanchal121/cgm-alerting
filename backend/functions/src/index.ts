@@ -308,9 +308,13 @@ async function updatePairedDevices(
       // member removed after pairing).
       const events = eventsByUid.get(d.data().pairedBy) ?? [];
       const worst = [...events].sort((a, b) => severityRank(b.severity) - severityRank(a.severity))[0];
+      // No message/value here - this RTDB path only requires auth != null
+      // (not family membership; RTDB rules can't cross-reference Firestore's
+      // membership check), so any signed-in app user who knows a deviceId
+      // could read it. severity/alertId alone don't expose glucose/IOB values.
       const payload = worst
-        ? { severity: worst.severity, alertId: `${worst.type}-${bucket}`, message: worst.message, timestamp: nowMs }
-        : { severity: 'NONE', alertId: `clear-${bucket}`, message: '', timestamp: nowMs };
+        ? { severity: worst.severity, alertId: `${worst.type}-${bucket}`, timestamp: nowMs }
+        : { severity: 'NONE', alertId: `clear-${bucket}`, timestamp: nowMs };
       return rtdb().ref(`devices/${d.id}/alert`).set(payload);
     })
   );
@@ -496,7 +500,6 @@ export const pairMcuDevice = onCall(async (request) => {
   await rtdb().ref(`devices/${deviceId}/alert`).set({
     severity: 'NONE',
     alertId: `paired-${nowMs}`,
-    message: '',
     timestamp: nowMs,
   });
   return { ok: true };

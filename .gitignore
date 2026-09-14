@@ -27,6 +27,9 @@ android-app/app/release/
 firmware/.pio/
 firmware/.vscode/
 
+# IDE
+.idea/
+
 # OS
 .DS_Store
 Thumbs.db
