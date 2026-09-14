@@ -17,6 +17,9 @@ pieces, each with its own setup instructions:
   device, purpose-built for stronger haptic feedback than a phone can give -
   connects to WiFi directly and gets alerts from the backend independent of
   the phone.
+- **`ml/`** - Python. Plan + framework for fine-tuning a time-series
+  foundation model (Chronos) on CGM data, offline and local-only - no
+  Firebase access, no training runs started yet. See `ml/README.md`.
 
 ## Suggested setup order
 

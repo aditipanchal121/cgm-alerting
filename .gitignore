@@ -27,6 +27,15 @@ android-app/app/release/
 firmware/.pio/
 firmware/.vscode/
 
+# ML - real health data and generated artifacts, never committed
+ml/venv/
+ml/.pytest_cache/
+ml/**/__pycache__/
+ml/data/raw/
+ml/data/processed/
+ml/*.generated.yaml
+ml/checkpoints/
+
 # IDE
 .idea/
 

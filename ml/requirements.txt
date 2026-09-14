@@ -1,0 +1,16 @@
+# Needed now - schema/preprocessing/evaluate/baselines and their tests run
+# against these alone, no GPU or model weights required.
+pandas>=2.0
+numpy>=1.24
+pyarrow>=14.0
+pyyaml>=6.0
+pytest>=7.4
+
+# Only needed once actual fine-tuning starts (see fine_tune.py, and
+# ../README.md's "not implemented yet" scope note) - a separate, much
+# heavier install (torch, and chronos-forecasting from its own GitHub repo,
+# not PyPI). Left commented out rather than listed here so `pip install -r
+# requirements.txt` for the parts of this framework that already work today
+# doesn't pull in a multi-GB torch install for no reason.
+# torch>=2.1
+# git+https://github.com/amazon-science/chronos-forecasting.git

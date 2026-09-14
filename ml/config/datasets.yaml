@@ -1,0 +1,42 @@
+# Planning reference for the staged roadmap (see ../README.md) - which
+# dataset plays which role, and at what relative sampling weight once
+# fine_tune.build_config() actually mixes them. Not yet read by any code;
+# update this alongside the plan as dataset access/loaders land.
+
+stage_1_population:
+  description: >
+    Broad CGM-dynamics fine-tune from the public Chronos-Bolt checkpoint,
+    before any of your brother's own data is involved.
+  sources:
+    - name: diatrend
+      role: primary - real insulin/carb logs, 5-min sampling, largest n
+      weight: 0.5
+    - name: replacebg
+      role: scale for glucose-dynamics statistics, thinner covariates
+      weight: 0.3
+    - name: ohio_t1dm
+      role: held out entirely - eval only, never trained on (see stage_3_eval)
+      weight: 0.0
+
+stage_2_personalization:
+  description: >
+    Further fine-tune the stage-1 checkpoint on your brother's own exported
+    data once there's enough of it (see ../README.md's "how much is enough"
+    section) - literature supports population-then-personal fine-tuning
+    outperforming either alone for single-patient glucose forecasting.
+  sources:
+    - name: vigil
+      role: the actual deployment target
+      weight: 1.0
+
+stage_3_eval:
+  description: >
+    Never trained on, at either stage - held out purely for literature-
+    comparable numbers and out-of-distribution robustness checks.
+  sources:
+    - name: ohio_t1dm
+      role: literature-standard benchmark (BGLP Challenge uses this set)
+    - name: shanghai_t1dm
+      role: OOD check - different sensor (Libre vs Dexcom), 15-min sampling
+    - name: shanghai_t2dm
+      role: OOD check - different disease population entirely
